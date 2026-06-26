@@ -8,7 +8,7 @@ A Slack bot for the Slack Agent Builder Challenge ("Agent for Good" accessibilit
 
 **Current state: Phases 1-5 done.** Socket Mode bot receives image/PDF attachments, downloads them, sends them to Gemini (`gemini-2.5-flash` by default, override with `GEMINI_MODEL`), and replies in-thread with an accessible structured description. Figma links are described from structured node data: `figma_mcp.fetch` (remote Figma MCP, OAuth) is tried first, falling back to the Figma REST API in `figma.py`. Lucidchart links return export instructions.
 
-Figma MCP needs a one-time browser auth: run `.venv\Scripts\python figma_mcp.py`, which stores OAuth tokens in `.figma_mcp_tokens.json` (gitignored). Until then, Figma links use the REST fallback (needs `FIGMA_TOKEN`).
+**Figma MCP is blocked by Figma policy**, not by this code. The remote Figma MCP is allowlist-only ("Only clients listed in the Figma MCP Catalog can connect"); self-registration returns 403, so the bot can't authorize. `figma_mcp.py` is kept as a documented best-effort primary — it short-circuits with no runtime cost, and `figma.get_figma_data()` falls back to the **REST API** (needs `FIGMA_TOKEN`), which is the effective Figma path and delivers the same structured node/connector data.
 
 Note: `gemini-2.0-flash` has no free-tier quota (returns `429 limit: 0`); `gemini-2.5-flash` works on the free tier — hence the default.
 
@@ -81,6 +81,7 @@ Ordered roughly by value-to-effort. All reuse the existing intake + Gemini + thr
 - **Mermaid/DOT export**: also emit the diagram as Mermaid (or Graphviz DOT) in a code block, giving blind users a re-editable, queryable copy of the structure. Add an instruction to the prompt; no new dependency. Caveat: only as accurate as Gemini's read of the image (Phase 5 Figma data makes it exact for Figma inputs).
 - **Confidence flagging**: have Gemini explicitly mark low-confidence transcriptions (it already did this organically with the "Envrionment" typo). Formalize so users know what to double-check.
 - **App Home tab**: static help/usage screen so users and challenge judges understand the bot without docs. Publish a `views.publish` Home view on `app_home_opened`.
+- **Per-user Figma auth**: today the bot reads Figma as a single account (the `FIGMA_TOKEN` / MCP tokens in `.env`), so it can only open files that account can access — other users' private files 403. Fix: each Slack user links their own Figma account via OAuth, with a token store keyed by Slack user ID; the handler picks the poster's token. Sizable (account-linking flow + per-user token persistence + refresh). Image/PDF uploads have no such limit. Until built, keep Figma demo files public or shared with the bot owner's account.
 
 ### General requirements
 - All replies in the thread of the original message, never in channel root

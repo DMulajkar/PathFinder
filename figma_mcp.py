@@ -1,12 +1,21 @@
-"""Phase 5 (primary path): Figma remote MCP client.
+"""Phase 5 (intended primary path): Figma remote MCP client.
 
-figma.get_figma_data() calls fetch() first and falls back to the REST API on any
-failure. Authorize once in a browser before the bot can use MCP:
+STATUS: BLOCKED by Figma policy, not by this code. Figma's remote MCP server is
+allowlist-only — "Only clients listed in the Figma MCP Catalog can connect"
+(https://developers.figma.com/docs/figma-mcp-server/). Self-registration via the
+advertised DCR endpoint returns 403 Forbidden for any non-catalog client, so this
+bot cannot authorize. The OAuth/PKCE/transport wiring below is correct and would
+work if the client were catalog-listed.
 
+Runtime is unaffected: authorize() can't complete, so no token file is created,
+so fetch() short-circuits and figma.get_figma_data() falls back to the REST API
+(figma.py) — which delivers the same structured node/connector data. ponytail:
+kept as a documented best-effort primary; delete if catalog listing never happens.
+
+If catalog-listed in future, authorize once in a browser:
     .venv\\Scripts\\python figma_mcp.py
-
-That stores OAuth tokens in .figma_mcp_tokens.json (gitignored). The bot reuses
-and refreshes them non-interactively; it never opens a browser mid-message.
+Tokens are cached to .figma_mcp_tokens.json (gitignored) and refreshed
+non-interactively; the bot never opens a browser mid-message.
 """
 import asyncio
 import json
