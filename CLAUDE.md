@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Slack bot for the Slack Agent Builder Challenge ("Agent for Good" accessibility track). It receives diagrams (images, Figma links, Lucidchart links) posted in Slack and returns structured text descriptions for blind/low-vision users.
 
-**Current state: Phases 1-4 done.** Socket Mode bot receives image/PDF attachments, downloads them, sends them to Gemini (`gemini-2.5-flash` by default, override with `GEMINI_MODEL`), and replies in-thread with an accessible structured description. Figma/Lucidchart URLs are detected; Figma MCP (Phase 5) is the remaining work.
+**Current state: Phases 1-5 done.** Socket Mode bot receives image/PDF attachments, downloads them, sends them to Gemini (`gemini-2.5-flash` by default, override with `GEMINI_MODEL`), and replies in-thread with an accessible structured description. Figma links are described from structured node data: `figma_mcp.fetch` (remote Figma MCP, OAuth) is tried first, falling back to the Figma REST API in `figma.py`. Lucidchart links return export instructions.
+
+Figma MCP needs a one-time browser auth: run `.venv\Scripts\python figma_mcp.py`, which stores OAuth tokens in `.figma_mcp_tokens.json` (gitignored). Until then, Figma links use the REST fallback (needs `FIGMA_TOKEN`).
 
 Note: `gemini-2.0-flash` has no free-tier quota (returns `429 limit: 0`); `gemini-2.5-flash` works on the free tier — hence the default.
 
@@ -68,6 +70,17 @@ Format Gemini response before sending to Slack:
 - Use file key + node ID (extracted in Phase 2) to pull actual component/frame data
 - Feed structured Figma node data into the Gemini prompt alongside or instead of a screenshot
 - More accurate than image recognition for structured diagrams
+
+### Phase 6 — Feature backlog (post-MVP)
+Ordered roughly by value-to-effort. All reuse the existing intake + Gemini + threaded-reply plumbing.
+
+- **Follow-up Q&A in-thread**: after a description, answer thread replies ("what happens if approval fails?") about the same diagram. Pass prior thread context + the image back to Gemini. Biggest UX win — turns a one-shot description into a conversation. (Subscribe to thread replies; key on `thread_ts` to recall which image the thread is about.)
+- **Reaction trigger**: react with a configured emoji (e.g. :eyes:) on any existing image message to describe it, not just on upload. Listen for `reaction_added`; fetch the message's file via the Slack API.
+- **Verbosity levels**: let the user pick summary / standard / detailed output. Keyword in the message or a per-thread setting selects the prompt variant. No new env needed.
+- **Plain-language mode**: re-describe at a non-technical reading level for non-engineer stakeholders. Another prompt variant.
+- **Mermaid/DOT export**: also emit the diagram as Mermaid (or Graphviz DOT) in a code block, giving blind users a re-editable, queryable copy of the structure. Add an instruction to the prompt; no new dependency. Caveat: only as accurate as Gemini's read of the image (Phase 5 Figma data makes it exact for Figma inputs).
+- **Confidence flagging**: have Gemini explicitly mark low-confidence transcriptions (it already did this organically with the "Envrionment" typo). Formalize so users know what to double-check.
+- **App Home tab**: static help/usage screen so users and challenge judges understand the bot without docs. Publish a `views.publish` Home view on `app_home_opened`.
 
 ### General requirements
 - All replies in the thread of the original message, never in channel root

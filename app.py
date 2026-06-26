@@ -3,7 +3,7 @@
 Phase 1: event pipeline (done)
 Phase 2: diagram intake — image download, Figma/Lucidchart URL detection (done)
 Phase 3-4: Gemini description + accessible Slack mrkdwn output (done)
-Phase 5: Figma MCP
+Phase 5: Figma structured data — MCP primary (figma_mcp), REST fallback (figma)
 """
 import os
 import re
@@ -16,6 +16,8 @@ from google.genai import errors as genai_errors
 from google.genai import types
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
+
+import figma
 
 load_dotenv()
 
@@ -30,9 +32,7 @@ FIGMA_RE = re.compile(
 LUCID_RE = re.compile(r"https://lucid\.app/")
 SUPPORTED_MIME = {"image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"}
 
-DESCRIBE_PROMPT = """You are an accessibility assistant helping a blind user understand a diagram shared in their workplace Slack channel. Analyze this diagram and describe it so it is fully understandable without seeing it.
-
-Extract:
+_ANALYSIS = """Extract:
 (1) the overall purpose of the diagram in one sentence,
 (2) all nodes or steps in logical order,
 (3) all decision points and their branches with explicit yes/no or condition labels,
@@ -42,8 +42,8 @@ Extract:
 Do not describe colors or visual styling. Focus entirely on structure, logic, and content.
 
 Accuracy rules (most important):
-- Account for EVERY box/node in the diagram. Do not omit, merge, or invent nodes. If unsure of a label, transcribe it as best you can and flag it in Notes.
-- Trace every arrow to its actual destination box by that box's name. Do not assume flow continues to the next-numbered step just because it is listed next.
+- Account for EVERY node. Do not omit, merge, or invent nodes. If unsure of a label, transcribe it as best you can and flag it in Notes.
+- Trace every arrow/connection to its actual destination node by that node's name. Do not assume flow continues to the next-numbered step just because it is listed next.
 - A numbered list does NOT imply sequential flow. For every step whose outgoing arrow does not go to the immediately following step, end its line with "(then go to Step N)". For a step with multiple outgoing arrows, describe it as a Decision instead.
 
 Format the answer as Slack mrkdwn for a screen reader:
@@ -53,6 +53,21 @@ Format the answer as Slack mrkdwn for a screen reader:
 - Then a "*Notes:*" section listing any labels, annotations, swimlane groupings, or uncertain transcriptions that did not fit the flow. Omit this section entirely if there are none.
 - Use single asterisks for bold. Do NOT use markdown headers (#), tables, bullet characters, horizontal rules, or emoji.
 """
+
+DESCRIBE_PROMPT = (
+    "You are an accessibility assistant helping a blind user understand a diagram "
+    "shared in their workplace Slack channel. Analyze this diagram and describe it "
+    "so it is fully understandable without seeing it.\n\n" + _ANALYSIS
+)
+
+FIGMA_PROMPT = (
+    "You are an accessibility assistant helping a blind user understand a diagram "
+    "from a Figma file shared in their workplace Slack channel. Below is the "
+    "structured node outline of that file (indented layer hierarchy with names, "
+    "types, text, x/y positions and sizes, and connector endpoints). Use the "
+    "positions and connectors to infer the diagram's flow and layout, and describe "
+    "it so it is fully understandable without seeing it.\n\n" + _ANALYSIS
+)
 
 
 # -- Intake helpers -----------------------------------------------------------
@@ -88,16 +103,11 @@ def to_slack_mrkdwn(text: str) -> str:
     return text.strip()
 
 
-def describe_diagram(image_bytes: bytes, mime_type: str) -> str:
-    """Send a diagram image/PDF to Gemini, return accessible Slack mrkdwn.
-
-    Retries 5xx (e.g. 503 overload) with exponential backoff. Does NOT retry
-    4xx like 429 limit:0 — those aren't transient. ponytail: 3 tries is plenty.
+def _generate(contents) -> str:
+    """Call Gemini and return Slack mrkdwn. Retries 5xx (e.g. 503 overload) with
+    exponential backoff. Does NOT retry 4xx like 429 limit:0 — not transient.
+    ponytail: 3 tries is plenty.
     """
-    contents = [
-        DESCRIBE_PROMPT,
-        types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-    ]
     for attempt in range(3):
         try:
             resp = gemini.models.generate_content(model=GEMINI_MODEL, contents=contents)
@@ -106,6 +116,18 @@ def describe_diagram(image_bytes: bytes, mime_type: str) -> str:
             if attempt == 2:
                 raise
             time.sleep(2 ** attempt)  # 1s, then 2s
+
+
+def describe_diagram(image_bytes: bytes, mime_type: str) -> str:
+    """Describe a diagram image/PDF via Gemini (image recognition path)."""
+    return _generate(
+        [DESCRIBE_PROMPT, types.Part.from_bytes(data=image_bytes, mime_type=mime_type)]
+    )
+
+
+def describe_figma(outline: str) -> str:
+    """Describe a Figma file from its structured node outline (no screenshot)."""
+    return _generate([FIGMA_PROMPT + "\n\nFigma node outline:\n" + outline])
 
 
 # -- Event handler ------------------------------------------------------------
@@ -148,14 +170,24 @@ def handle_message(event, say):
         say(text=description, thread_ts=thread_ts)
         return
 
-    # Priority 2: Figma link
+    # Priority 2: Figma link — pull structured node data (MCP, REST fallback)
     figma_key = extract_figma_key(text)
     if figma_key:
-        # ponytail: placeholder until Phase 5 wires up Figma MCP
-        say(
-            text=f"Figma file detected (key: `{figma_key}`). Figma MCP integration coming in Phase 5.",
-            thread_ts=thread_ts,
-        )
+        node_id = figma.extract_node_id(text)
+        try:
+            outline = figma.get_figma_data(figma_key, node_id)
+            description = describe_figma(outline)
+        except Exception as e:
+            say(
+                text=(
+                    f"Sorry, I couldn't read that Figma file: {e}\n"
+                    "Make sure the file is accessible and `FIGMA_TOKEN` is set, "
+                    "or export the frame as a PNG and upload it here instead."
+                ),
+                thread_ts=thread_ts,
+            )
+            return
+        say(text=description, thread_ts=thread_ts)
         return
 
     # Priority 3: Lucidchart link

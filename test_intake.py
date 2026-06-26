@@ -5,6 +5,8 @@ Tests the pure URL/mimetype logic. Network download is not exercised here.
 import types as _types
 
 import app
+import figma
+import figma_mcp
 from app import extract_figma_key, has_lucidchart, to_slack_mrkdwn, SUPPORTED_MIME
 from google.genai import errors as genai_errors
 
@@ -35,6 +37,66 @@ def test_slack_mrkdwn():
     assert to_slack_mrkdwn("A -> B") == "A → B"
     # plain text passes through, trailing whitespace trimmed
     assert to_slack_mrkdwn("just text\n") == "just text"
+
+
+def test_extract_node_id():
+    # URL form '1-2' is converted to API form '1:2'
+    assert figma.extract_node_id("https://figma.com/design/K/x?node-id=1-2") == "1:2"
+    assert figma.extract_node_id("...&node-id=10-205&t=z") == "10:205"
+    assert figma.extract_node_id("https://figma.com/design/K/x") is None
+
+
+def test_figma_outline():
+    data = {
+        "nodes": {
+            "1:2": {
+                "document": {
+                    "name": "Flow", "type": "FRAME",
+                    "absoluteBoundingBox": {"x": 0, "y": 0, "width": 100, "height": 50},
+                    "children": [
+                        {"name": "Start", "type": "TEXT", "characters": "Start"},
+                        {"name": "arrow", "type": "CONNECTOR",
+                         "connectorStart": {"endpointNodeId": "3:1"},
+                         "connectorEnd": {"endpointNodeId": "3:2"}},
+                    ],
+                }
+            }
+        }
+    }
+    out = figma.figma_outline(data)
+    assert "Flow [FRAME]" in out
+    assert 'text="Start"' in out
+    assert "connects 3:1 -> 3:2" in out
+    assert "  - Start" in out  # child is indented under the frame
+
+
+def test_figma_mcp_helpers():
+    assert figma_mcp._figma_url("ABC", "1:2") == "https://www.figma.com/design/ABC?node-id=1-2"
+    # only declared params are filled
+    schema = {"properties": {"url": {}, "nodeId": {}}}
+    assert figma_mcp._build_args(schema, "ABC", "1:2") == {
+        "url": "https://www.figma.com/design/ABC?node-id=1-2", "nodeId": "1:2"
+    }
+    # preference order wins over list order
+    tools = [_types.SimpleNamespace(name="get_screenshot"),
+             _types.SimpleNamespace(name="get_metadata")]
+    assert figma_mcp._pick_tool(tools).name == "get_metadata"
+
+
+def test_get_figma_data_falls_back_to_rest():
+    """When MCP fetch fails, get_figma_data uses the REST API. No network."""
+    def boom(*_):
+        raise RuntimeError("mcp down")
+
+    orig_mcp, orig_rest = figma_mcp.fetch, figma.fetch_figma_rest
+    try:
+        figma_mcp.fetch = boom
+        figma.fetch_figma_rest = lambda fk, nid: {
+            "document": {"name": "Root", "type": "CANVAS", "children": []}
+        }
+        assert "Root [CANVAS]" in figma.get_figma_data("KEY", "1:2")
+    finally:
+        figma_mcp.fetch, figma.fetch_figma_rest = orig_mcp, orig_rest
 
 
 def test_describe_retries_on_5xx():
@@ -80,5 +142,9 @@ if __name__ == "__main__":
     test_lucidchart()
     test_supported_mime()
     test_slack_mrkdwn()
+    test_extract_node_id()
+    test_figma_outline()
+    test_figma_mcp_helpers()
+    test_get_figma_data_falls_back_to_rest()
     test_describe_retries_on_5xx()
-    print("all intake + format + retry checks passed")
+    print("all intake + format + figma + mcp + retry checks passed")
