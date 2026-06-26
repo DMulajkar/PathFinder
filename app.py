@@ -1,14 +1,17 @@
 """Slack diagram-accessibility bot.
 
 Phase 1: event pipeline (done)
-Phase 2: diagram intake — image download, Figma/Lucidchart URL detection
-Phase 3+: Gemini description, accessible output, Figma MCP
+Phase 2: diagram intake — image download, Figma/Lucidchart URL detection (done)
+Phase 3-4: Gemini description + accessible Slack mrkdwn output (done)
+Phase 5: Figma MCP
 """
 import os
 import re
 
 import requests
 from dotenv import load_dotenv
+from google import genai
+from google.genai import types
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
@@ -16,11 +19,38 @@ load_dotenv()
 
 app = App(token=os.environ["SLACK_BOT_TOKEN"])
 
+gemini = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+
 FIGMA_RE = re.compile(
     r"https://(?:www\.)?figma\.com/(file|design|make|board|proto|slides)/([A-Za-z0-9]+)"
 )
 LUCID_RE = re.compile(r"https://lucid\.app/")
 SUPPORTED_MIME = {"image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"}
+
+DESCRIBE_PROMPT = """You are an accessibility assistant helping a blind user understand a diagram shared in their workplace Slack channel. Analyze this diagram and describe it so it is fully understandable without seeing it.
+
+Extract:
+(1) the overall purpose of the diagram in one sentence,
+(2) all nodes or steps in logical order,
+(3) all decision points and their branches with explicit yes/no or condition labels,
+(4) the directional flow between steps,
+(5) any labels, annotations, or swimlane groupings.
+
+Do not describe colors or visual styling. Focus entirely on structure, logic, and content.
+
+Accuracy rules (most important):
+- Account for EVERY box/node in the diagram. Do not omit, merge, or invent nodes. If unsure of a label, transcribe it as best you can and flag it in Notes.
+- Trace every arrow to its actual destination box by that box's name. Do not assume flow continues to the next-numbered step just because it is listed next.
+- A numbered list does NOT imply sequential flow. For every step whose outgoing arrow does not go to the immediately following step, end its line with "(then go to Step N)". For a step with multiple outgoing arrows, describe it as a Decision instead.
+
+Format the answer as Slack mrkdwn for a screen reader:
+- First line: "*Summary:* <one sentence>"
+- Then a numbered list of steps, one step per line, following the diagram's flow as closely as a linear list allows.
+- Put each decision on its own line using exactly this notation: "Decision: <question>? -> <LABEL>: go to Step N | <LABEL>: go to Step M" using the real branch labels (YES/NO or the actual conditions).
+- Then a "*Notes:*" section listing any labels, annotations, swimlane groupings, or uncertain transcriptions that did not fit the flow. Omit this section entirely if there are none.
+- Use single asterisks for bold. Do NOT use markdown headers (#), tables, bullet characters, horizontal rules, or emoji.
+"""
 
 
 # -- Intake helpers -----------------------------------------------------------
@@ -44,6 +74,28 @@ def extract_figma_key(text: str) -> str | None:
 
 def has_lucidchart(text: str) -> bool:
     return bool(LUCID_RE.search(text))
+
+
+# -- Description layer (Phase 3-4) --------------------------------------------
+
+def to_slack_mrkdwn(text: str) -> str:
+    """Convert the markdown Gemini tends to emit into Slack mrkdwn."""
+    text = re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)                       # **bold** -> *bold*
+    text = re.sub(r"^#{1,6}\s*(.+)$", r"*\1*", text, flags=re.MULTILINE)  # # header -> *bold*
+    text = text.replace("->", "→")                                       # arrow notation
+    return text.strip()
+
+
+def describe_diagram(image_bytes: bytes, mime_type: str) -> str:
+    """Send a diagram image/PDF to Gemini, return accessible Slack mrkdwn."""
+    resp = gemini.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=[
+            DESCRIBE_PROMPT,
+            types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+        ],
+    )
+    return to_slack_mrkdwn(resp.text)
 
 
 # -- Event handler ------------------------------------------------------------
@@ -78,11 +130,12 @@ def handle_message(event, say):
             say(text=f"Failed to download `{f.get('name')}`: {e}", thread_ts=thread_ts)
             continue
 
-        # ponytail: placeholder until Phase 3 wires up Gemini
-        say(
-            text=f"Downloaded *{f.get('name')}* ({len(image_bytes):,} bytes). Description coming in Phase 3.",
-            thread_ts=thread_ts,
-        )
+        try:
+            description = describe_diagram(image_bytes, mime)
+        except Exception as e:
+            say(text=f"Sorry, I couldn't analyze *{f.get('name')}*: {e}", thread_ts=thread_ts)
+            return
+        say(text=description, thread_ts=thread_ts)
         return
 
     # Priority 2: Figma link
@@ -106,8 +159,8 @@ def handle_message(event, say):
         )
         return
 
-    # Fallback: plain text (keep echo for debugging, remove in Phase 3)
-    say(text=f"Echo: {text}", thread_ts=thread_ts)
+    # No diagram, no recognized link: stay silent so the bot doesn't spam channels.
+    # ponytail: add a help reply on @-mention/DM only if users ask for one.
 
 
 if __name__ == "__main__":

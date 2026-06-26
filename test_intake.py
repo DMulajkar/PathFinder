@@ -2,7 +2,7 @@
 
 Tests the pure URL/mimetype logic. Network download is not exercised here.
 """
-from app import extract_figma_key, has_lucidchart, SUPPORTED_MIME
+from app import extract_figma_key, has_lucidchart, to_slack_mrkdwn, SUPPORTED_MIME
 
 
 def test_figma_key():
@@ -25,8 +25,17 @@ def test_supported_mime():
     assert "text/plain" not in SUPPORTED_MIME
 
 
+def test_slack_mrkdwn():
+    assert to_slack_mrkdwn("**Summary:** hi") == "*Summary:* hi"
+    assert to_slack_mrkdwn("# Heading") == "*Heading*"
+    assert to_slack_mrkdwn("A -> B") == "A → B"
+    # plain text passes through, trailing whitespace trimmed
+    assert to_slack_mrkdwn("just text\n") == "just text"
+
+
 if __name__ == "__main__":
     test_figma_key()
     test_lucidchart()
     test_supported_mime()
-    print("all phase 2 intake checks passed")
+    test_slack_mrkdwn()
+    print("all intake + format checks passed")

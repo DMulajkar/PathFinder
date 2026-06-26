@@ -1,4 +1,4 @@
 slack_bolt
 python-dotenv
 requests
-google-generativeai
+google-genai

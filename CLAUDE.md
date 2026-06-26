@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Slack bot for the Slack Agent Builder Challenge ("Agent for Good" accessibility track). It receives diagrams (images, Figma links, Lucidchart links) posted in Slack and returns structured text descriptions for blind/low-vision users.
 
-**Current state: Phase 1 only** — echo bot confirming the event pipeline (Socket Mode, threaded replies, file attachment detection). Gemini description layer and Figma MCP are not built yet.
+**Current state: Phases 1-4 done.** Socket Mode bot receives image/PDF attachments, downloads them, sends them to Gemini (`gemini-2.5-flash` by default, override with `GEMINI_MODEL`), and replies in-thread with an accessible structured description. Figma/Lucidchart URLs are detected; Figma MCP (Phase 5) is the remaining work.
+
+Note: `gemini-2.0-flash` has no free-tier quota (returns `429 limit: 0`); `gemini-2.5-flash` works on the free tier — hence the default.
 
 ## Running the bot
 
