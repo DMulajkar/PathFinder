@@ -18,6 +18,7 @@ from slack_bolt import App, Assistant
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 import figma
+import lucid
 
 load_dotenv()
 
@@ -187,12 +188,23 @@ def route_diagram(event, say, set_status=None) -> bool:
         say(text=description, thread_ts=thread_ts)
         return True
 
-    # Priority 3: Lucidchart link
+    # Priority 3: Lucidchart link — try direct export, else instruct manual export
     if has_lucidchart(text):
+        doc_id = lucid.extract_doc_id(text)
+        if doc_id and os.environ.get("LUCID_API_TOKEN"):
+            try:
+                if set_status:
+                    set_status("Exporting the Lucidchart diagram…")
+                description = describe_diagram(lucid.export_png(doc_id), "image/png")
+                say(text=description, thread_ts=thread_ts)
+                return True
+            except Exception:
+                pass  # fall through to manual-export instructions
         say(
             text=(
-                "*Lucidchart diagrams cannot be read directly.*\n"
-                "Please export your diagram as a PNG or PDF (File → Export) and re-upload it here."
+                "I couldn't read that Lucidchart diagram directly "
+                "(it may be private, or the Lucid token is missing/expired).\n"
+                "Please export it as a PNG or PDF (File → Export) and upload it here."
             ),
             thread_ts=thread_ts,
         )
