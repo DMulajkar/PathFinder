@@ -40,3 +40,16 @@ def export_png(doc_id: str) -> bytes:
     )
     resp.raise_for_status()
     return resp.content
+
+
+def get_lucid(doc_id: str) -> tuple[str, object]:
+    """MCP-first, REST fallback. Returns ('text', str) from MCP content, or
+    ('image', bytes) from a REST PNG export. Raises if neither is available.
+    """
+    try:
+        import lucid_mcp
+
+        return ("text", lucid_mcp.fetch(doc_id))
+    except Exception:
+        # MCP not authorized / failed -> REST export (raises if no token/access)
+        return ("image", export_png(doc_id))

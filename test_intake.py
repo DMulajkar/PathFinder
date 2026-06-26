@@ -8,6 +8,7 @@ import app
 import figma
 import figma_mcp
 import lucid
+import lucid_mcp
 from app import extract_figma_key, has_lucidchart, to_slack_mrkdwn, SUPPORTED_MIME
 from google.genai import errors as genai_errors
 
@@ -75,6 +76,30 @@ def test_lucid_doc_id():
     url = "https://lucid.app/lucidchart/442fec0f-0444-4035-b1f6-10dc97b1ff18/edit?page=0_0#"
     assert lucid.extract_doc_id(url) == "442fec0f-0444-4035-b1f6-10dc97b1ff18"
     assert lucid.extract_doc_id("no lucid link here") is None
+
+
+def test_lucid_get_lucid_falls_back_to_rest():
+    """When Lucid MCP fails, get_lucid uses REST export (image). No network."""
+    import lucid_mcp
+
+    def boom(*_):
+        raise RuntimeError("mcp down")
+
+    orig_mcp, orig_export = lucid_mcp.fetch, lucid.export_png
+    try:
+        lucid_mcp.fetch = boom
+        lucid.export_png = lambda doc_id: b"PNGBYTES"
+        assert lucid.get_lucid("doc123") == ("image", b"PNGBYTES")
+    finally:
+        lucid_mcp.fetch, lucid.export_png = orig_mcp, orig_export
+
+
+def test_lucid_mcp_helpers():
+    assert lucid_mcp._doc_url("abc") == "https://lucid.app/lucidchart/abc/edit"
+    schema = {"properties": {"url": {}, "documentId": {}}}
+    assert lucid_mcp._build_args(schema, "abc") == {
+        "url": "https://lucid.app/lucidchart/abc/edit", "documentId": "abc"
+    }
 
 
 def test_figma_mcp_helpers():
@@ -152,6 +177,8 @@ if __name__ == "__main__":
     test_extract_node_id()
     test_figma_outline()
     test_lucid_doc_id()
+    test_lucid_get_lucid_falls_back_to_rest()
+    test_lucid_mcp_helpers()
     test_figma_mcp_helpers()
     test_get_figma_data_falls_back_to_rest()
     test_describe_retries_on_5xx()

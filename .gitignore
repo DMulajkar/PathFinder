@@ -1,5 +1,6 @@
 .env
 .figma_mcp_tokens.json
+.lucid_mcp_tokens.json
 __pycache__/
 *.pyc
 .venv/
