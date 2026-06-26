@@ -17,17 +17,20 @@ import asyncio
 import json
 import queue
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import requests
 from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 
 MCP_URL = "https://mcp.lucid.app/mcp"
+TOKEN_ENDPOINT = "https://mcp.lucid.app/oauth/token"
 CALLBACK_PORT = 8765
 REDIRECT_URI = f"http://localhost:{CALLBACK_PORT}/callback"
 TOKENS_FILE = Path(__file__).with_name(".lucid_mcp_tokens.json")
@@ -56,6 +59,7 @@ class _FileStorage(TokenStorage):
     async def set_tokens(self, tokens: OAuthToken) -> None:
         d = self._load()
         d["tokens"] = tokens.model_dump(mode="json")
+        d["obtained_at"] = time.time()  # the SDK never persists expiry; we do
         self._save(d)
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:
@@ -129,10 +133,49 @@ async def _fetch(doc_id: str) -> str:
             return _result_text(result)
 
 
+def _needs_refresh(data: dict, now: float | None = None) -> bool:
+    """True if the stored access token is missing/expired (2-min buffer).
+
+    Works around the SDK not persisting expiry: on a fresh process it would
+    treat an expired token as valid, skip refresh, 401, then full re-auth.
+    """
+    obtained = data.get("obtained_at")
+    if obtained is None:
+        return True
+    expires_in = data.get("tokens", {}).get("expires_in", 0)
+    return (now or time.time()) >= obtained + expires_in - 120
+
+
+def _refresh_tokens() -> None:
+    """Refresh the access token via the refresh_token grant and persist it."""
+    store = _FileStorage()
+    data = store._load()
+    tok, client = data.get("tokens", {}), data.get("client", {})
+    resp = requests.post(
+        TOKEN_ENDPOINT,
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": tok["refresh_token"],
+            "client_id": client["client_id"],
+            "client_secret": client["client_secret"],
+            "resource": MCP_URL,
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    new = resp.json()
+    new.setdefault("refresh_token", tok.get("refresh_token"))  # keep if not rotated
+    data["tokens"] = new
+    data["obtained_at"] = time.time()
+    store._save(data)
+
+
 def fetch(doc_id: str) -> str:
     """Sync entry point used by lucid.get_lucid(). Raises if not authorized."""
     if not TOKENS_FILE.exists():
         raise RuntimeError("Lucid MCP not authorized")  # short-circuit -> REST
+    if _needs_refresh(_FileStorage()._load()):
+        _refresh_tokens()  # keep storage fresh so the SDK loads a valid token
     return asyncio.run(_fetch(doc_id))
 
 

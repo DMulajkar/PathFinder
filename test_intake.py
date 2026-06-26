@@ -102,6 +102,15 @@ def test_lucid_mcp_helpers():
     }
 
 
+def test_lucid_mcp_needs_refresh():
+    now = 1_000_000.0
+    fresh = {"obtained_at": now - 100, "tokens": {"expires_in": 3600}}
+    expired = {"obtained_at": now - 3600, "tokens": {"expires_in": 3600}}
+    assert lucid_mcp._needs_refresh(fresh, now) is False
+    assert lucid_mcp._needs_refresh(expired, now) is True   # past expiry
+    assert lucid_mcp._needs_refresh({}, now) is True        # never timestamped
+
+
 def test_figma_mcp_helpers():
     assert figma_mcp._figma_url("ABC", "1:2") == "https://www.figma.com/design/ABC?node-id=1-2"
     # only declared params are filled
@@ -179,6 +188,7 @@ if __name__ == "__main__":
     test_lucid_doc_id()
     test_lucid_get_lucid_falls_back_to_rest()
     test_lucid_mcp_helpers()
+    test_lucid_mcp_needs_refresh()
     test_figma_mcp_helpers()
     test_get_figma_data_falls_back_to_rest()
     test_describe_retries_on_5xx()
