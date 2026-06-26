@@ -14,6 +14,11 @@
         { "title": "How do I use this?", "message": "How do I use this assistant?" },
         { "title": "What can you read?", "message": "What kinds of diagrams can you describe?" }
       ]
+    },
+    "app_home": {
+      "home_tab_enabled": false,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
     }
   },
   "oauth_config": {
