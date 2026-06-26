@@ -6,3 +6,6 @@ __pycache__/
 .venv/
 bot_stdout.txt
 bot_stderr.txt
+app.log
+app.err
+lucid_desc_test.txt

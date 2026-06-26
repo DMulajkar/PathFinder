@@ -31,12 +31,10 @@ MCP_URL = "https://mcp.lucid.app/mcp"
 CALLBACK_PORT = 8765
 REDIRECT_URI = f"http://localhost:{CALLBACK_PORT}/callback"
 TOKENS_FILE = Path(__file__).with_name(".lucid_mcp_tokens.json")
-# Best-effort preference for a "read document content" tool; real names are
-# printed by authorize() and can be pinned here afterward.
-TOOL_PREFERENCE = (
-    "get_document", "fetch_document", "read_document",
-    "get_document_content", "summarize_document", "search_documents",
-)
+# Pinned to Lucid's real tools: `fetch` returns structured document content
+# (pages -> spatial regions of diagram elements) by document ID — exactly what
+# we want. PNG export is a within-MCP image fallback.
+TOOL_PREFERENCE = ("fetch", "lucid_export_document_as_PNG")
 
 
 class _FileStorage(TokenStorage):
