@@ -111,6 +111,14 @@ def test_lucid_mcp_needs_refresh():
     assert lucid_mcp._needs_refresh({}, now) is True        # never timestamped
 
 
+def test_parse_verbosity():
+    assert app.parse_verbosity("give me a summary of this") == "summary"
+    assert app.parse_verbosity("describe in detail https://figma.com/x") == "detailed"
+    assert app.parse_verbosity("a detailed breakdown please") == "detailed"
+    assert app.parse_verbosity("https://lucid.app/lucidchart/x/edit") == "standard"
+    assert app.parse_verbosity("") == "standard"
+
+
 def test_thread_text():
     msgs = [
         {"user": "UBOT", "text": "*Summary:* a flow"},
@@ -212,6 +220,7 @@ if __name__ == "__main__":
     test_lucid_get_lucid_falls_back_to_rest()
     test_lucid_mcp_helpers()
     test_lucid_mcp_needs_refresh()
+    test_parse_verbosity()
     test_thread_text()
     test_recall_diagram_routes_figma()
     test_figma_mcp_helpers()
