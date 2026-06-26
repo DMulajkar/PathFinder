@@ -1,13 +1,16 @@
 """Lucidchart direct read via the Lucid REST API.
 
-Exports a Lucidchart document to PNG using LUCID_API_TOKEN (an OAuth access token
-with document-content read scope), so the bot can describe it without the user
-exporting manually. The PNG is handed to the existing image pipeline.
+Exports a Lucidchart document to PNG using LUCID_API_TOKEN, then hands the PNG to
+the existing image pipeline so the bot describes it without a manual export.
 
-ponytail: uses a static token from env. Lucid OAuth access tokens expire (~1h);
-for a long-running bot, add OAuth refresh (client_id/secret + refresh_token).
-Fine for demo/testing with a fresh token. On any failure the handler falls back
-to the "export as PNG and re-upload" instructions, so it degrades gracefully.
+LUCID_API_TOKEN can be either:
+  - a Lucid REST *API key* (preferred — does not expire), or
+  - an OAuth access token with `lucidchart.document.content:readonly` scope.
+Both authenticate as `Authorization: Bearer <token>`. Either only reads
+documents the owning account can access (single-account scoping).
+
+On any failure the handler falls back to "export as PNG and re-upload", so it
+degrades gracefully. ponytail: API key avoids OAuth refresh entirely.
 """
 import os
 import re
