@@ -1,6 +1,6 @@
-# Diagram Describer
+# PathFinder
 
-A Slack bot that turns diagrams into accessible, structured text descriptions for
+A Slack assistant that turns diagrams into accessible, structured text descriptions for
 blind and low-vision users. Built for the Slack Agent Builder Challenge
 ("Agent for Good" accessibility track).
 

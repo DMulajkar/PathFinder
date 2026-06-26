@@ -1,18 +1,26 @@
 {
   "display_information": {
-    "name": "Diagram Describer",
+    "name": "PathFinder",
     "description": "Turns diagrams into accessible, structured text descriptions for blind and low-vision users."
   },
   "features": {
     "bot_user": {
-      "display_name": "diagram-describer",
+      "display_name": "pathfinder",
       "always_online": true
+    },
+    "assistant_view": {
+      "assistant_description": "Traces diagrams into accessible, structured text descriptions for blind and low-vision users.",
+      "suggested_prompts": [
+        { "title": "How do I use this?", "message": "How do I use this assistant?" },
+        { "title": "What can you read?", "message": "What kinds of diagrams can you describe?" }
+      ]
     }
   },
   "oauth_config": {
     "scopes": {
       "bot": [
         "app_mentions:read",
+        "assistant:write",
         "chat:write",
         "channels:history",
         "groups:history",
@@ -25,6 +33,8 @@
     "event_subscriptions": {
       "bot_events": [
         "app_mention",
+        "assistant_thread_started",
+        "assistant_thread_context_changed",
         "message.channels",
         "message.groups",
         "message.im"

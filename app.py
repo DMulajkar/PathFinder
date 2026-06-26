@@ -1,4 +1,4 @@
-"""Slack diagram-accessibility bot.
+"""PathFinder — Slack assistant for diagram accessibility.
 
 Phase 1: event pipeline (done)
 Phase 2: diagram intake — image download, Figma/Lucidchart URL detection (done)
@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
-from slack_bolt import App
+from slack_bolt import App, Assistant
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 import figma
@@ -130,53 +130,50 @@ def describe_figma(outline: str) -> str:
     return _generate([FIGMA_PROMPT + "\n\nFigma node outline:\n" + outline])
 
 
-# -- Event handler ------------------------------------------------------------
+HELP_TEXT = (
+    "Share a diagram and I'll describe it accessibly: upload a *PNG, JPG, or PDF*, "
+    "or paste a *Figma* link. Lucidchart links must be exported as a PNG first."
+)
 
-@app.event("message")
-def handle_message(event, say):
-    if event.get("bot_id"):  # ponytail: ignore our own messages, avoid loops
-        return
 
+# -- Shared intake routing ----------------------------------------------------
+
+def route_diagram(event, say, set_status=None) -> bool:
+    """Route a message to the right describer. Returns True if it responded.
+
+    Shared by the channel handler and the assistant. set_status (assistant only)
+    shows a 'thinking' indicator while Gemini/Figma work.
+    """
     thread_ts = event.get("thread_ts") or event["ts"]
     text = event.get("text") or ""
-    files = event.get("files") or []
 
     # Priority 1: image/PDF attachment
-    for f in files:
+    for f in event.get("files") or []:
         mime = f.get("mimetype", "")
         if mime not in SUPPORTED_MIME:
-            say(
-                text=f"Unsupported file type `{mime}`. Please upload a PNG, JPG, or PDF.",
-                thread_ts=thread_ts,
-            )
-            continue
-
+            say(text=f"Unsupported file type `{mime}`. Please upload a PNG, JPG, or PDF.", thread_ts=thread_ts)
+            return True
         url = f.get("url_private_download")
         if not url:
             say(text="Could not get a download URL for that file.", thread_ts=thread_ts)
-            continue
-
+            return True
         try:
-            image_bytes = download_slack_file(url)
-        except Exception as e:
-            say(text=f"Failed to download `{f.get('name')}`: {e}", thread_ts=thread_ts)
-            continue
-
-        try:
-            description = describe_diagram(image_bytes, mime)
+            if set_status:
+                set_status("Analyzing your diagram…")
+            description = describe_diagram(download_slack_file(url), mime)
         except Exception as e:
             say(text=f"Sorry, I couldn't analyze *{f.get('name')}*: {e}", thread_ts=thread_ts)
-            return
+            return True
         say(text=description, thread_ts=thread_ts)
-        return
+        return True
 
-    # Priority 2: Figma link — pull structured node data (MCP, REST fallback)
+    # Priority 2: Figma link — structured node data (MCP, REST fallback)
     figma_key = extract_figma_key(text)
     if figma_key:
-        node_id = figma.extract_node_id(text)
         try:
-            outline = figma.get_figma_data(figma_key, node_id)
-            description = describe_figma(outline)
+            if set_status:
+                set_status("Reading the Figma file…")
+            description = describe_figma(figma.get_figma_data(figma_key, figma.extract_node_id(text)))
         except Exception as e:
             say(
                 text=(
@@ -186,9 +183,9 @@ def handle_message(event, say):
                 ),
                 thread_ts=thread_ts,
             )
-            return
+            return True
         say(text=description, thread_ts=thread_ts)
-        return
+        return True
 
     # Priority 3: Lucidchart link
     if has_lucidchart(text):
@@ -199,10 +196,48 @@ def handle_message(event, say):
             ),
             thread_ts=thread_ts,
         )
-        return
+        return True
 
-    # No diagram, no recognized link: stay silent so the bot doesn't spam channels.
-    # ponytail: add a help reply on @-mention/DM only if users ask for one.
+    return False
+
+
+# -- Channel handler ----------------------------------------------------------
+
+@app.event("message")
+def handle_message(event, say):
+    if event.get("bot_id"):  # ponytail: ignore our own messages, avoid loops
+        return
+    # Stay silent on plain text in channels so the bot doesn't spam.
+    route_diagram(event, say)
+
+
+# -- Assistant (Slack AI app) -------------------------------------------------
+
+assistant = Assistant()
+
+
+@assistant.thread_started
+def assistant_started(say, set_suggested_prompts):
+    say(
+        "Hi! I make diagrams accessible for blind and low-vision teammates. "
+        "Upload an image or PDF of a diagram, or paste a Figma link, and I'll "
+        "describe its purpose, steps, and decision branches in plain text."
+    )
+    set_suggested_prompts(
+        prompts=[
+            {"title": "How do I use this?", "message": "How do I use this assistant?"},
+            {"title": "What can you read?", "message": "What kinds of diagrams can you describe?"},
+        ]
+    )
+
+
+@assistant.user_message
+def assistant_message(event, say, set_status):
+    if not route_diagram(event, say, set_status=set_status):
+        say(HELP_TEXT)  # plain text in the assistant pane -> guidance
+
+
+app.assistant(assistant)
 
 
 if __name__ == "__main__":
