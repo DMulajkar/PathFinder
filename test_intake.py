@@ -111,6 +111,29 @@ def test_lucid_mcp_needs_refresh():
     assert lucid_mcp._needs_refresh({}, now) is True        # never timestamped
 
 
+def test_thread_text():
+    msgs = [
+        {"user": "UBOT", "text": "*Summary:* a flow"},
+        {"user": "U123", "text": "what if approval fails?"},
+        {"user": "U123", "text": "   "},  # blank skipped
+    ]
+    assert app._thread_text(msgs, "UBOT") == (
+        "Assistant: *Summary:* a flow\nUser: what if approval fails?"
+    )
+
+
+def test_recall_diagram_routes_figma():
+    """_recall_diagram picks the diagram from a thread; figma path mocked."""
+    orig = figma.get_figma_data
+    try:
+        figma.get_figma_data = lambda k, n: "OUTLINE"
+        msgs = [{"text": "plain"}, {"text": "see https://figma.com/design/KEY/x?node-id=1-2"}]
+        assert app._recall_diagram(msgs) == ("text", "OUTLINE", None)
+        assert app._recall_diagram([{"text": "no diagram here"}]) is None
+    finally:
+        figma.get_figma_data = orig
+
+
 def test_figma_mcp_helpers():
     assert figma_mcp._figma_url("ABC", "1:2") == "https://www.figma.com/design/ABC?node-id=1-2"
     # only declared params are filled
@@ -189,6 +212,8 @@ if __name__ == "__main__":
     test_lucid_get_lucid_falls_back_to_rest()
     test_lucid_mcp_helpers()
     test_lucid_mcp_needs_refresh()
+    test_thread_text()
+    test_recall_diagram_routes_figma()
     test_figma_mcp_helpers()
     test_get_figma_data_falls_back_to_rest()
     test_describe_retries_on_5xx()

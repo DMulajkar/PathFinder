@@ -78,6 +78,15 @@ LUCID_PROMPT = (
     "is fully understandable without seeing it.\n\n" + _ANALYSIS
 )
 
+QA_PROMPT = (
+    "You are an accessibility assistant helping a blind user who has already "
+    "received a structured description of a diagram shared in their workplace "
+    "Slack thread. Answer their follow-up question using ONLY the diagram's actual "
+    "content and the conversation so far. If the answer is not in the diagram, say "
+    "so plainly. Be concise. Use Slack mrkdwn: single *asterisks* for bold, no "
+    "headers, tables, or emoji."
+)
+
 
 # -- Intake helpers -----------------------------------------------------------
 
@@ -142,6 +151,14 @@ def describe_figma(outline: str) -> str:
 def describe_lucid(content: str) -> str:
     """Describe a Lucidchart document from MCP content text (no screenshot)."""
     return _generate([LUCID_PROMPT + "\n\nLucid document content:\n" + content])
+
+
+def answer_question(kind: str, payload, mime, conversation: str) -> str:
+    """Answer a follow-up question about a recalled diagram (image or text)."""
+    prompt = QA_PROMPT + "\n\nConversation so far:\n" + conversation
+    if kind == "image":
+        return _generate([prompt, types.Part.from_bytes(data=payload, mime_type=mime)])
+    return _generate([prompt + "\n\nDiagram content:\n" + payload])
 
 
 HELP_TEXT = (
@@ -230,14 +247,87 @@ def route_diagram(event, say, set_status=None) -> bool:
     return False
 
 
+# -- Follow-up Q&A in-thread (Phase 6) ----------------------------------------
+
+_bot_user_id = None
+
+
+def _get_bot_user_id(client) -> str:
+    global _bot_user_id
+    if _bot_user_id is None:
+        _bot_user_id = client.auth_test()["user_id"]
+    return _bot_user_id
+
+
+def _recall_diagram(messages):
+    """Re-derive the diagram from a thread's messages, in post order.
+    ponytail: stateless re-fetch (no cache) — re-downloads/re-queries each
+    follow-up; add a thread_ts->payload cache if calls get expensive."""
+    for m in messages:
+        for f in m.get("files") or []:
+            mime = f.get("mimetype", "")
+            url = f.get("url_private_download")
+            if mime in SUPPORTED_MIME and url:
+                return ("image", download_slack_file(url), mime)
+        text = m.get("text") or ""
+        key = extract_figma_key(text)
+        if key:
+            return ("text", figma.get_figma_data(key, figma.extract_node_id(text)), None)
+        if has_lucidchart(text):
+            doc_id = lucid.extract_doc_id(text)
+            if doc_id:
+                kind, payload = lucid.get_lucid(doc_id)
+                return (kind, payload, "image/png" if kind == "image" else None)
+    return None
+
+
+def _thread_text(messages, bot_user_id) -> str:
+    lines = []
+    for m in messages:
+        body = (m.get("text") or "").strip()
+        if body:
+            who = "Assistant" if m.get("user") == bot_user_id else "User"
+            lines.append(f"{who}: {body}")
+    return "\n".join(lines)
+
+
+def handle_followup(event, say, client, set_status=None) -> bool:
+    """Answer a plain-text follow-up in a thread where we described a diagram.
+    Returns True if it responded. Stays silent unless the bot already posted in
+    the thread AND a diagram can be recalled from it."""
+    thread_ts = event.get("thread_ts")
+    if not thread_ts or not (event.get("text") or "").strip():
+        return False  # only thread replies can be follow-ups
+    try:
+        messages = client.conversations_replies(
+            channel=event["channel"], ts=thread_ts, limit=50
+        )["messages"]
+    except Exception:
+        return False
+    bot_id = _get_bot_user_id(client)
+    if not any(m.get("user") == bot_id for m in messages):
+        return False  # we never described anything here -> not our thread
+    diagram = _recall_diagram(messages)
+    if not diagram:
+        return False
+    if set_status:
+        set_status("Looking at the diagram…")
+    kind, payload, mime = diagram
+    say(text=answer_question(kind, payload, mime, _thread_text(messages, bot_id)),
+        thread_ts=thread_ts)
+    return True
+
+
 # -- Channel handler ----------------------------------------------------------
 
 @app.event("message")
-def handle_message(event, say):
+def handle_message(event, say, client):
     if event.get("bot_id"):  # ponytail: ignore our own messages, avoid loops
         return
-    # Stay silent on plain text in channels so the bot doesn't spam.
-    route_diagram(event, say)
+    if route_diagram(event, say):
+        return
+    # Plain text: answer if it's a follow-up in a thread we described; else silent.
+    handle_followup(event, say, client)
 
 
 # -- Assistant (Slack AI app) -------------------------------------------------
@@ -261,9 +351,12 @@ def assistant_started(say, set_suggested_prompts):
 
 
 @assistant.user_message
-def assistant_message(event, say, set_status):
-    if not route_diagram(event, say, set_status=set_status):
-        say(HELP_TEXT)  # plain text in the assistant pane -> guidance
+def assistant_message(event, say, set_status, client):
+    if route_diagram(event, say, set_status=set_status):
+        return
+    if handle_followup(event, say, client, set_status=set_status):
+        return
+    say(HELP_TEXT)  # plain text, no diagram in thread -> guidance
 
 
 app.assistant(assistant)
