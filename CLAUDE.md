@@ -77,7 +77,6 @@ Format Gemini response before sending to Slack:
 Ordered roughly by value-to-effort. All reuse the existing intake + Gemini + threaded-reply plumbing.
 
 - **Follow-up Q&A in-thread**: after a description, answer thread replies ("what happens if approval fails?") about the same diagram. Pass prior thread context + the image back to Gemini. Biggest UX win — turns a one-shot description into a conversation. (Subscribe to thread replies; key on `thread_ts` to recall which image the thread is about.)
-- **Reaction trigger**: react with a configured emoji (e.g. :eyes:) on any existing image message to describe it, not just on upload. Listen for `reaction_added`; fetch the message's file via the Slack API.
 - **Verbosity levels**: let the user pick summary / standard / detailed output. Keyword in the message or a per-thread setting selects the prompt variant. No new env needed.
 - **Plain-language mode**: re-describe at a non-technical reading level for non-engineer stakeholders. Another prompt variant.
 - **Mermaid/DOT export**: also emit the diagram as Mermaid (or Graphviz DOT) in a code block, giving blind users a re-editable, queryable copy of the structure. Add an instruction to the prompt; no new dependency. Caveat: only as accurate as Gemini's read of the image (Phase 5 Figma data makes it exact for Figma inputs).
