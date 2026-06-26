@@ -2,7 +2,11 @@
 
 Tests the pure URL/mimetype logic. Network download is not exercised here.
 """
+import types as _types
+
+import app
 from app import extract_figma_key, has_lucidchart, to_slack_mrkdwn, SUPPORTED_MIME
+from google.genai import errors as genai_errors
 
 
 def test_figma_key():
@@ -33,9 +37,48 @@ def test_slack_mrkdwn():
     assert to_slack_mrkdwn("just text\n") == "just text"
 
 
+def test_describe_retries_on_5xx():
+    """Retries transient 5xx then succeeds; gives up after 3 attempts. No network."""
+    calls = {"n": 0}
+
+    class FakeResp:
+        text = "**ok**"
+
+    def fail_twice_then_ok(model, contents):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise genai_errors.ServerError(503, {})
+        return FakeResp()
+
+    orig_gen, orig_time = app.gemini.models.generate_content, app.time
+    try:
+        app.time = _types.SimpleNamespace(sleep=lambda *_: None)  # no real waiting
+
+        app.gemini.models.generate_content = fail_twice_then_ok
+        assert app.describe_diagram(b"x", "image/png") == "*ok*"
+        assert calls["n"] == 3  # 2 failures + 1 success
+
+        calls["n"] = 0
+
+        def always_fail(model, contents):
+            calls["n"] += 1
+            raise genai_errors.ServerError(503, {})
+
+        app.gemini.models.generate_content = always_fail
+        try:
+            app.describe_diagram(b"x", "image/png")
+            assert False, "should have re-raised after 3 attempts"
+        except genai_errors.ServerError:
+            pass
+        assert calls["n"] == 3
+    finally:
+        app.gemini.models.generate_content, app.time = orig_gen, orig_time
+
+
 if __name__ == "__main__":
     test_figma_key()
     test_lucidchart()
     test_supported_mime()
     test_slack_mrkdwn()
-    print("all intake + format checks passed")
+    test_describe_retries_on_5xx()
+    print("all intake + format + retry checks passed")

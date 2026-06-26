@@ -7,10 +7,12 @@ Phase 5: Figma MCP
 """
 import os
 import re
+import time
 
 import requests
 from dotenv import load_dotenv
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
@@ -87,15 +89,23 @@ def to_slack_mrkdwn(text: str) -> str:
 
 
 def describe_diagram(image_bytes: bytes, mime_type: str) -> str:
-    """Send a diagram image/PDF to Gemini, return accessible Slack mrkdwn."""
-    resp = gemini.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=[
-            DESCRIBE_PROMPT,
-            types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-        ],
-    )
-    return to_slack_mrkdwn(resp.text)
+    """Send a diagram image/PDF to Gemini, return accessible Slack mrkdwn.
+
+    Retries 5xx (e.g. 503 overload) with exponential backoff. Does NOT retry
+    4xx like 429 limit:0 — those aren't transient. ponytail: 3 tries is plenty.
+    """
+    contents = [
+        DESCRIBE_PROMPT,
+        types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+    ]
+    for attempt in range(3):
+        try:
+            resp = gemini.models.generate_content(model=GEMINI_MODEL, contents=contents)
+            return to_slack_mrkdwn(resp.text)
+        except genai_errors.ServerError:
+            if attempt == 2:
+                raise
+            time.sleep(2 ** attempt)  # 1s, then 2s
 
 
 # -- Event handler ------------------------------------------------------------
