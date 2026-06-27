@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Slack bot for the Slack Agent Builder Challenge ("Agent for Good" accessibility track). Sighted team members upload diagrams (images, Figma links, Lucidchart links) in Slack; the bot replies **in-thread** with structured text descriptions for blind/low-vision teammates to read.
 
-**Current state: Phases 1-5 done + Lucid MCP.** Socket Mode bot receives image/PDF attachments, downloads them, sends them to Gemini (`gemini-2.5-flash` by default, override with `GEMINI_MODEL`), and replies in-thread with an accessible structured description. 
+**Current state: Phases 1-6 done.** Socket Mode bot (also a Slack AI assistant) receives image/PDF attachments, downloads them, sends them to Gemini (`gemini-2.5-flash` by default, override with `GEMINI_MODEL`), and replies in-thread with an accessible structured description. Phase 6 adds in-thread follow-up Q&A, verbosity/plain-language/mermaid output options, always-on confidence flagging, and an App Home help tab (see Phase 6 below). 
 
 **Figma:** structured node data via `figma_mcp.fetch` (remote Figma MCP, OAuth) with REST fallback (needs `FIGMA_TOKEN`). Figma MCP is allowlist-gated (policy, not code), but REST works.
 
@@ -73,15 +73,15 @@ Format Gemini response before sending to Slack:
 - Feed structured Figma node data into the Gemini prompt alongside or instead of a screenshot
 - More accurate than image recognition for structured diagrams
 
-### Phase 6 — Feature backlog (post-MVP)
-Ordered roughly by value-to-effort. All reuse the existing intake + Gemini + threaded-reply plumbing.
+### Phase 6 — Feature backlog (DONE)
+All shipped, reusing the existing intake + Gemini + threaded-reply plumbing.
 
-- **Follow-up Q&A in-thread**: after a description, answer thread replies ("what happens if approval fails?") about the same diagram. Pass prior thread context + the image back to Gemini. Biggest UX win — turns a one-shot description into a conversation. (Subscribe to thread replies; key on `thread_ts` to recall which image the thread is about.)
-- **Verbosity levels**: let the user pick summary / standard / detailed output. Keyword in the message or a per-thread setting selects the prompt variant. No new env needed.
-- **Plain-language mode**: re-describe at a non-technical reading level for non-engineer stakeholders. Another prompt variant.
-- **Mermaid/DOT export**: also emit the diagram as Mermaid (or Graphviz DOT) in a code block, giving blind users a re-editable, queryable copy of the structure. Add an instruction to the prompt; no new dependency. Caveat: only as accurate as Gemini's read of the image (Phase 5 Figma data makes it exact for Figma inputs).
-- **Confidence flagging**: have Gemini explicitly mark low-confidence transcriptions (it already did this organically with the "Envrionment" typo). Formalize so users know what to double-check.
-- **App Home tab**: static help/usage screen so users and challenge judges understand the bot without docs. Publish a `views.publish` Home view on `app_home_opened`.
+- **Follow-up Q&A in-thread** (done): plain-text replies in a thread where the bot described a diagram are answered about that diagram. Stateless — `handle_followup()` re-fetches the thread via `conversations.replies`, recalls the diagram (`_recall_diagram` re-downloads image / re-queries Figma/Lucid), and answers via `answer_question()`. Works in channels and the assistant pane.
+- **Verbosity levels** (done): `summary` / `standard` / `detailed` selected by a keyword (`parse_verbosity`).
+- **Plain-language mode** (done): non-technical variant selected by keyword (`parse_plain_language`). Verbosity + plain-language compose into one `describe_style()` suffix passed to the describe functions.
+- **Mermaid export** (done): keyword (`parse_mermaid`) appends a `mermaid` flowchart code block. `to_slack_mrkdwn` is fence-aware so the `->` → `→` rewrite doesn't corrupt Mermaid `-->` edges.
+- **Confidence flagging** (done): formalized in the shared `_ANALYSIS` prompt (always on) — uncertain image transcriptions get an inline `[unclear]` marker + a "Please double-check:" line in Notes; skipped for exact structured (Figma/Lucid) text.
+- **App Home tab** (done): static help/usage Home view (`_home_view`) published on `app_home_opened`. Manifest enables the Home tab and subscribes to the event.
 
 ### General requirements
 - All replies in the thread of the original message, never in channel root
