@@ -119,6 +119,21 @@ def test_parse_verbosity():
     assert app.parse_verbosity("") == "standard"
 
 
+def test_parse_plain_language():
+    assert app.parse_plain_language("explain in plain language")
+    assert app.parse_plain_language("plain English please")
+    assert app.parse_plain_language("non-technical version")
+    assert not app.parse_plain_language("a plain box on the left")  # 'plain' alone won't trigger
+    assert not app.parse_plain_language("standard detail")
+
+
+def test_describe_style_composes():
+    # plain + detailed combine; standard with no plain is empty
+    s = app.describe_style("detailed plain language")
+    assert "DETAILED" in s and "NON-TECHNICAL" in s
+    assert app.describe_style("just describe it") == ""
+
+
 def test_thread_text():
     msgs = [
         {"user": "UBOT", "text": "*Summary:* a flow"},
@@ -221,6 +236,8 @@ if __name__ == "__main__":
     test_lucid_mcp_helpers()
     test_lucid_mcp_needs_refresh()
     test_parse_verbosity()
+    test_parse_plain_language()
+    test_describe_style_composes()
     test_thread_text()
     test_recall_diagram_routes_figma()
     test_figma_mcp_helpers()

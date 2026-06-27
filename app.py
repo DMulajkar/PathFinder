@@ -87,7 +87,8 @@ QA_PROMPT = (
     "headers, tables, or emoji."
 )
 
-# Verbosity variants appended to a describe prompt. standard = current behavior.
+# Style instructions appended to a describe prompt. Composable: verbosity (how
+# much) + plain-language (reading level) are independent axes.
 _VERBOSITY = {
     "summary": (
         "\n\nVERBOSITY: SUMMARY. Output only the *Summary:* line followed by a "
@@ -102,6 +103,11 @@ _VERBOSITY = {
         "Notes)."
     ),
 }
+_PLAIN = (
+    "\n\nAUDIENCE: NON-TECHNICAL. Write for a non-engineer stakeholder. Avoid "
+    "jargon and tool-specific terms; if a technical term is unavoidable, explain "
+    "it in plain words. Keep the same structure."
+)
 
 
 # -- Intake helpers -----------------------------------------------------------
@@ -139,6 +145,25 @@ def parse_verbosity(text: str) -> str:
     return "standard"
 
 
+_PLAIN_RE = re.compile(
+    r"\b(plain[- ]?(language|english|terms)|non[- ]?technical|layman'?s?|eli5|simple terms)\b",
+    re.I,
+)
+
+
+def parse_plain_language(text: str) -> bool:
+    """True if the message asks for a non-technical, plain-language description."""
+    return bool(_PLAIN_RE.search(text or ""))
+
+
+def describe_style(text: str) -> str:
+    """Combine verbosity + plain-language into one prompt suffix."""
+    style = _VERBOSITY.get(parse_verbosity(text), "")
+    if parse_plain_language(text):
+        style += _PLAIN
+    return style
+
+
 def to_slack_mrkdwn(text: str) -> str:
     """Convert the markdown Gemini tends to emit into Slack mrkdwn."""
     text = re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)                       # **bold** -> *bold*
@@ -162,20 +187,19 @@ def _generate(contents) -> str:
             time.sleep(2 ** attempt)  # 1s, then 2s
 
 
-def describe_diagram(image_bytes: bytes, mime_type: str, verbosity: str = "standard") -> str:
+def describe_diagram(image_bytes: bytes, mime_type: str, style: str = "") -> str:
     """Describe a diagram image/PDF via Gemini (image recognition path)."""
-    prompt = DESCRIBE_PROMPT + _VERBOSITY.get(verbosity, "")
-    return _generate([prompt, types.Part.from_bytes(data=image_bytes, mime_type=mime_type)])
+    return _generate([DESCRIBE_PROMPT + style, types.Part.from_bytes(data=image_bytes, mime_type=mime_type)])
 
 
-def describe_figma(outline: str, verbosity: str = "standard") -> str:
+def describe_figma(outline: str, style: str = "") -> str:
     """Describe a Figma file from its structured node outline (no screenshot)."""
-    return _generate([FIGMA_PROMPT + _VERBOSITY.get(verbosity, "") + "\n\nFigma node outline:\n" + outline])
+    return _generate([FIGMA_PROMPT + style + "\n\nFigma node outline:\n" + outline])
 
 
-def describe_lucid(content: str, verbosity: str = "standard") -> str:
+def describe_lucid(content: str, style: str = "") -> str:
     """Describe a Lucidchart document from MCP content text (no screenshot)."""
-    return _generate([LUCID_PROMPT + _VERBOSITY.get(verbosity, "") + "\n\nLucid document content:\n" + content])
+    return _generate([LUCID_PROMPT + style + "\n\nLucid document content:\n" + content])
 
 
 def answer_question(kind: str, payload, mime, conversation: str) -> str:
@@ -188,8 +212,9 @@ def answer_question(kind: str, payload, mime, conversation: str) -> str:
 
 HELP_TEXT = (
     "Share a diagram and I'll describe it accessibly: upload a *PNG, JPG, or PDF*, "
-    "or paste a *Figma* or *Lucidchart* link. Add the word *summary* or *detailed* "
-    "to set how much detail you want, and reply in the thread to ask follow-ups."
+    "or paste a *Figma* or *Lucidchart* link. Add *summary* or *detailed* to set "
+    "how much detail, *plain language* for a non-technical version, and reply in "
+    "the thread to ask follow-ups."
 )
 
 
@@ -203,7 +228,7 @@ def route_diagram(event, say, set_status=None) -> bool:
     """
     thread_ts = event.get("thread_ts") or event["ts"]
     text = event.get("text") or ""
-    verbosity = parse_verbosity(text)
+    style = describe_style(text)
 
     # Priority 1: image/PDF attachment
     for f in event.get("files") or []:
@@ -218,7 +243,7 @@ def route_diagram(event, say, set_status=None) -> bool:
         try:
             if set_status:
                 set_status("Analyzing your diagram…")
-            description = describe_diagram(download_slack_file(url), mime, verbosity)
+            description = describe_diagram(download_slack_file(url), mime, style)
         except Exception as e:
             say(text=f"Sorry, I couldn't analyze *{f.get('name')}*: {e}", thread_ts=thread_ts)
             return True
@@ -231,7 +256,7 @@ def route_diagram(event, say, set_status=None) -> bool:
         try:
             if set_status:
                 set_status("Reading the Figma file…")
-            description = describe_figma(figma.get_figma_data(figma_key, figma.extract_node_id(text)), verbosity)
+            description = describe_figma(figma.get_figma_data(figma_key, figma.extract_node_id(text)), style)
         except Exception as e:
             say(
                 text=(
@@ -254,8 +279,8 @@ def route_diagram(event, say, set_status=None) -> bool:
                     set_status("Reading the Lucidchart document…")
                 kind, payload = lucid.get_lucid(doc_id)
                 description = (
-                    describe_lucid(payload, verbosity) if kind == "text"
-                    else describe_diagram(payload, "image/png", verbosity)
+                    describe_lucid(payload, style) if kind == "text"
+                    else describe_diagram(payload, "image/png", style)
                 )
                 say(text=description, thread_ts=thread_ts)
                 return True
