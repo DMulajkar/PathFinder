@@ -43,15 +43,19 @@ _ANALYSIS = """Extract:
 Do not describe colors or visual styling. Focus entirely on structure, logic, and content.
 
 Accuracy rules (most important):
-- Account for EVERY node. Do not omit, merge, or invent nodes. If unsure of a label, transcribe it as best you can and flag it in Notes.
+- Account for EVERY node. Do not omit, merge, or invent nodes. If unsure of a label, transcribe it exactly as it appears (do not correct typos) and mark it [unclear].
 - Trace every arrow/connection to its actual destination node by that node's name. Do not assume flow continues to the next-numbered step just because it is listed next.
 - A numbered list does NOT imply sequential flow. For every step whose outgoing arrow does not go to the immediately following step, end its line with "(then go to Step N)". For a step with multiple outgoing arrows, describe it as a Decision instead.
+
+Confidence flagging:
+- Append " [unclear]" immediately after any label, number, or connection you are not fully confident about (blurry, ambiguous, or a likely typo). Reproduce the text as written; never silently correct or guess.
+- Only flag genuine uncertainty. If the content is given to you as exact text (not read from an image), do not flag it.
 
 Format the answer as Slack mrkdwn for a screen reader:
 - First line: "*Summary:* <one sentence>"
 - Then a numbered list of steps, one step per line, following the diagram's flow as closely as a linear list allows.
 - Put each decision on its own line using exactly this notation: "Decision: <question>? -> <LABEL>: go to Step N | <LABEL>: go to Step M" using the real branch labels (YES/NO or the actual conditions).
-- Then a "*Notes:*" section listing any labels, annotations, swimlane groupings, or uncertain transcriptions that did not fit the flow. Omit this section entirely if there are none.
+- Then a "*Notes:*" section listing any labels, annotations, or swimlane groupings that did not fit the flow, and — if you marked anything [unclear] — a "Please double-check:" line listing those items so the reader knows what to verify. Omit the section entirely if there is nothing to note.
 - Use single asterisks for bold. Do NOT use markdown headers (#), tables, bullet characters, horizontal rules, or emoji.
 """
 
