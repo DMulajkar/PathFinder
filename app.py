@@ -393,6 +393,57 @@ def handle_followup(event, say, client, set_status=None) -> bool:
     return True
 
 
+# -- App Home tab (static help screen) ----------------------------------------
+
+def _home_view() -> dict:
+    def section(text):
+        return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
+
+    return {
+        "type": "home",
+        "blocks": [
+            {"type": "header", "text": {"type": "plain_text", "text": "PathFinder"}},
+            section(
+                "I turn diagrams into *accessible, structured text* for blind and "
+                "low-vision teammates. Share a diagram in any channel I'm in (or here in "
+                "the *Messages* tab) and I'll reply in-thread with a screen-reader "
+                "friendly breakdown."
+            ),
+            {"type": "divider"},
+            section(
+                "*What I can read*\n"
+                "• Image / PDF uploads (PNG, JPG, GIF, WebP, PDF)\n"
+                "• *Figma* links — from real node/connector structure\n"
+                "• *Lucidchart* links — from real document structure via the Lucid MCP"
+            ),
+            section(
+                "*Each description includes*\n"
+                "• A one-line summary\n"
+                "• Numbered steps in flow order\n"
+                "• Decision branches with explicit → notation\n"
+                "• `[unclear]` flags on anything I'm unsure about, so you know what to verify"
+            ),
+            section(
+                "*Options* — add a word to your message:\n"
+                "• *summary* or *detailed* — how much detail\n"
+                "• *plain language* — non-technical version for stakeholders\n"
+                "• *mermaid* — also get a re-editable flowchart code block\n"
+                "• Reply in the thread to ask *follow-up questions* about the diagram"
+            ),
+            {"type": "divider"},
+            section(
+                "_Built for the Slack Agent Builder Challenge — Agent for Good "
+                "(accessibility track)._"
+            ),
+        ],
+    }
+
+
+@app.event("app_home_opened")
+def publish_home(event, client):
+    client.views_publish(user_id=event["user"], view=_home_view())
+
+
 # -- Channel handler ----------------------------------------------------------
 
 @app.event("message")

@@ -144,6 +144,13 @@ def test_parse_mermaid():
     assert not app.parse_mermaid("a normal description")
 
 
+def test_home_view():
+    view = app._home_view()
+    assert view["type"] == "home"
+    assert any(b["type"] == "header" for b in view["blocks"])
+    assert all("type" in b for b in view["blocks"])
+
+
 def test_thread_text():
     msgs = [
         {"user": "UBOT", "text": "*Summary:* a flow"},
@@ -249,6 +256,7 @@ if __name__ == "__main__":
     test_parse_plain_language()
     test_describe_style_composes()
     test_parse_mermaid()
+    test_home_view()
     test_thread_text()
     test_recall_diagram_routes_figma()
     test_figma_mcp_helpers()
