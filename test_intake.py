@@ -39,6 +39,10 @@ def test_slack_mrkdwn():
     assert to_slack_mrkdwn("A -> B") == "A → B"
     # plain text passes through, trailing whitespace trimmed
     assert to_slack_mrkdwn("just text\n") == "just text"
+    # code fences are protected: Mermaid '-->' must survive, prose '->' converts
+    out = to_slack_mrkdwn("flow A -> B\n```mermaid\nX -->|Yes| Y\n```")
+    assert "A → B" in out          # prose arrow converted
+    assert "X -->|Yes| Y" in out   # code arrow untouched
 
 
 def test_extract_node_id():
@@ -128,10 +132,16 @@ def test_parse_plain_language():
 
 
 def test_describe_style_composes():
-    # plain + detailed combine; standard with no plain is empty
-    s = app.describe_style("detailed plain language")
-    assert "DETAILED" in s and "NON-TECHNICAL" in s
+    # plain + detailed + mermaid combine; standard with no flags is empty
+    s = app.describe_style("detailed plain language as mermaid")
+    assert "DETAILED" in s and "NON-TECHNICAL" in s and "Mermaid" in s
     assert app.describe_style("just describe it") == ""
+
+
+def test_parse_mermaid():
+    assert app.parse_mermaid("give me the mermaid version")
+    assert app.parse_mermaid("include diagram code")
+    assert not app.parse_mermaid("a normal description")
 
 
 def test_thread_text():
@@ -238,6 +248,7 @@ if __name__ == "__main__":
     test_parse_verbosity()
     test_parse_plain_language()
     test_describe_style_composes()
+    test_parse_mermaid()
     test_thread_text()
     test_recall_diagram_routes_figma()
     test_figma_mcp_helpers()

@@ -108,6 +108,12 @@ _PLAIN = (
     "jargon and tool-specific terms; if a technical term is unavoidable, explain "
     "it in plain words. Keep the same structure."
 )
+_MERMAID = (
+    "\n\nAlso append a Mermaid version of the diagram in a ```mermaid fenced code "
+    "block: use `flowchart TD`, one node per box with its real label, and the real "
+    "edges; label decision branches like -->|Yes| and -->|No|. Include only nodes "
+    "and connections that actually exist in the diagram."
+)
 
 
 # -- Intake helpers -----------------------------------------------------------
@@ -156,20 +162,33 @@ def parse_plain_language(text: str) -> bool:
     return bool(_PLAIN_RE.search(text or ""))
 
 
+def parse_mermaid(text: str) -> bool:
+    """True if the message asks for a Mermaid/code version of the diagram."""
+    return bool(re.search(r"\b(mermaid|diagram code|flowchart code|as code)\b", (text or "").lower()))
+
+
 def describe_style(text: str) -> str:
-    """Combine verbosity + plain-language into one prompt suffix."""
+    """Combine verbosity + plain-language + mermaid into one prompt suffix."""
     style = _VERBOSITY.get(parse_verbosity(text), "")
     if parse_plain_language(text):
         style += _PLAIN
+    if parse_mermaid(text):
+        style += _MERMAID
     return style
 
 
 def to_slack_mrkdwn(text: str) -> str:
-    """Convert the markdown Gemini tends to emit into Slack mrkdwn."""
-    text = re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)                       # **bold** -> *bold*
-    text = re.sub(r"^#{1,6}\s*(.+)$", r"*\1*", text, flags=re.MULTILINE)  # # header -> *bold*
-    text = text.replace("->", "→")                                       # arrow notation
-    return text.strip()
+    """Convert the markdown Gemini tends to emit into Slack mrkdwn.
+
+    Splits on ``` fences and transforms only the prose segments, so code blocks
+    (e.g. Mermaid '-->' edges) survive the arrow/bold rewrites untouched.
+    """
+    parts = text.split("```")
+    for i in range(0, len(parts), 2):  # even indexes are outside code fences
+        seg = re.sub(r"\*\*(.+?)\*\*", r"*\1*", parts[i])                 # **bold** -> *bold*
+        seg = re.sub(r"^#{1,6}\s*(.+)$", r"*\1*", seg, flags=re.MULTILINE)  # # header -> *bold*
+        parts[i] = seg.replace("->", "→")                                # arrow notation
+    return "```".join(parts).strip()
 
 
 def _generate(contents) -> str:
@@ -213,8 +232,8 @@ def answer_question(kind: str, payload, mime, conversation: str) -> str:
 HELP_TEXT = (
     "Share a diagram and I'll describe it accessibly: upload a *PNG, JPG, or PDF*, "
     "or paste a *Figma* or *Lucidchart* link. Add *summary* or *detailed* to set "
-    "how much detail, *plain language* for a non-technical version, and reply in "
-    "the thread to ask follow-ups."
+    "how much detail, *plain language* for a non-technical version, *mermaid* for a "
+    "re-editable code version, and reply in the thread to ask follow-ups."
 )
 
 
