@@ -166,7 +166,7 @@ def test_recall_diagram_routes_figma():
     """_recall_diagram picks the diagram from a thread; figma path mocked."""
     orig = figma.get_figma_data
     try:
-        figma.get_figma_data = lambda k, n: "OUTLINE"
+        figma.get_figma_data = lambda k, n: ("text", "OUTLINE")
         msgs = [{"text": "plain"}, {"text": "see https://figma.com/design/KEY/x?node-id=1-2"}]
         assert app._recall_diagram(msgs) == ("text", "OUTLINE", None)
         assert app._recall_diagram([{"text": "no diagram here"}]) is None
@@ -229,9 +229,25 @@ def test_get_figma_data_falls_back_to_rest():
         figma.fetch_figma_rest = lambda fk, nid: {
             "document": {"name": "Root", "type": "CANVAS", "children": []}
         }
-        assert "Root [CANVAS]" in figma.get_figma_data("KEY", "1:2")
+        kind, payload = figma.get_figma_data("KEY", "1:2")
+        assert kind == "text" and "Root [CANVAS]" in payload
     finally:
         figma_mcp.fetch, figma.fetch_figma_rest = orig_mcp, orig_rest
+
+
+def test_get_figma_data_renders_png_when_rest_fails():
+    """When MCP and the files REST both fail (e.g. 429), fall back to a PNG render."""
+    def boom(*_):
+        raise RuntimeError("down")
+
+    orig_mcp, orig_rest, orig_png = figma_mcp.fetch, figma.fetch_figma_rest, figma.render_png
+    try:
+        figma_mcp.fetch = boom
+        figma.fetch_figma_rest = boom
+        figma.render_png = lambda fk, nid: b"PNG"
+        assert figma.get_figma_data("KEY", "0:1") == ("image", b"PNG")
+    finally:
+        figma_mcp.fetch, figma.fetch_figma_rest, figma.render_png = orig_mcp, orig_rest, orig_png
 
 
 def test_describe_retries_on_5xx():
@@ -293,5 +309,6 @@ if __name__ == "__main__":
     test_figma_mcp_helpers()
     test_figma_rest_retries_on_429()
     test_get_figma_data_falls_back_to_rest()
+    test_get_figma_data_renders_png_when_rest_fails()
     test_describe_retries_on_5xx()
     print("all intake + format + figma + mcp + retry checks passed")

@@ -82,13 +82,42 @@ def figma_outline(data: dict) -> str:
     return "\n".join(lines)
 
 
-def get_figma_data(file_key: str, node_id: str | None) -> str:
-    """MCP-first, REST fallback. Returns a text outline of the Figma node tree."""
+def render_png(file_key: str, node_id: str | None) -> bytes:
+    """Render a node to PNG via the Figma images endpoint and return the bytes.
+
+    /v1/images is a separate rate-limit bucket from /v1/files, so this still works
+    when file-content fetches are throttled (429). Used as a last-resort fallback
+    feeding the Gemini vision path. ponytail: scale=2 balances readable text vs
+    image size; drop to 1 if a large board renders too big.
+    """
+    headers = {"X-Figma-Token": os.environ["FIGMA_TOKEN"]}
+    ids = node_id or "0:1"
+    meta = requests.get(
+        f"https://api.figma.com/v1/images/{file_key}?ids={ids}&format=png&scale=2",
+        headers=headers, timeout=40,
+    )
+    meta.raise_for_status()
+    img_url = next(iter(meta.json().get("images", {}).values()), None)
+    if not img_url:
+        raise RuntimeError("Figma returned no rendered image")
+    img = requests.get(img_url, timeout=60)
+    img.raise_for_status()
+    return img.content
+
+
+def get_figma_data(file_key: str, node_id: str | None) -> tuple[str, object]:
+    """Returns (kind, payload): ('text', outline) from the Figma MCP or the
+    /v1/files REST API, or ('image', png_bytes) rendered via /v1/images when the
+    structured fetch fails (e.g. files-endpoint rate limit). Mirrors get_lucid.
+    """
     try:
         import figma_mcp
 
-        return figma_mcp.fetch(file_key, node_id)
+        return ("text", figma_mcp.fetch(file_key, node_id))
     except Exception:
-        # ponytail: any MCP failure (not configured, auth expired, network)
-        # falls back to REST — the bot stays functional regardless.
-        return figma_outline(fetch_figma_rest(file_key, node_id))
+        pass  # MCP not available (allowlist/blocked) -> structured REST
+    try:
+        return ("text", figma_outline(fetch_figma_rest(file_key, node_id)))
+    except Exception:
+        # files endpoint failed (e.g. 429) -> render a PNG from the images endpoint
+        return ("image", render_png(file_key, node_id))

@@ -279,7 +279,11 @@ def route_diagram(event, say, set_status=None) -> bool:
         try:
             if set_status:
                 set_status("Reading the Figma file…")
-            description = describe_figma(figma.get_figma_data(figma_key, figma.extract_node_id(text)), style)
+            kind, payload = figma.get_figma_data(figma_key, figma.extract_node_id(text))
+            description = (
+                describe_figma(payload, style) if kind == "text"
+                else describe_diagram(payload, "image/png", style)
+            )
         except Exception as e:
             if "429" in str(e):
                 msg = (
@@ -352,7 +356,8 @@ def _recall_diagram(messages):
         text = m.get("text") or ""
         key = extract_figma_key(text)
         if key:
-            return ("text", figma.get_figma_data(key, figma.extract_node_id(text)), None)
+            kind, payload = figma.get_figma_data(key, figma.extract_node_id(text))
+            return (kind, payload, "image/png" if kind == "image" else None)
         if has_lucidchart(text):
             doc_id = lucid.extract_doc_id(text)
             if doc_id:
