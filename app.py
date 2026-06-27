@@ -283,8 +283,9 @@ def route_diagram(event, say, set_status=None) -> bool:
         except Exception as e:
             if "429" in str(e):
                 msg = (
-                    "Figma is rate-limiting requests right now (429). Please wait a "
-                    "moment and try again, or export the frame as a PNG and upload it here."
+                    "Figma is rate-limiting its API for this token (429), and its free "
+                    "quota can take a while to reset. Please export the frame as a PNG and "
+                    "upload it here — that path has no Figma limit — or try the link later."
                 )
             else:
                 msg = (
