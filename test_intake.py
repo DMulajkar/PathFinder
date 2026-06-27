@@ -187,6 +187,37 @@ def test_figma_mcp_helpers():
     assert figma_mcp._pick_tool(tools).name == "get_metadata"
 
 
+def test_figma_rest_retries_on_429():
+    """A transient 429 (short Retry-After) is retried, then succeeds. No network."""
+    calls = {"n": 0}
+
+    class FakeResp:
+        def __init__(self, status):
+            self.status_code = status
+            self.headers = {"Retry-After": "0"}
+
+        def raise_for_status(self):
+            pass  # only the 200 reaches here in this test
+
+        def json(self):
+            return {"document": {"name": "Root", "type": "CANVAS", "children": []}}
+
+    def fake_get(url, headers, timeout):
+        calls["n"] += 1
+        return FakeResp(429 if calls["n"] == 1 else 200)
+
+    orig_get, orig_time = figma.requests.get, figma.time
+    figma.os.environ.setdefault("FIGMA_TOKEN", "x")
+    try:
+        figma.time = _types.SimpleNamespace(sleep=lambda *_: None)
+        figma.requests.get = fake_get
+        data = figma.fetch_figma_rest("KEY", "0:1")
+        assert data["document"]["name"] == "Root"
+        assert calls["n"] == 2  # one retry after the 429
+    finally:
+        figma.requests.get, figma.time = orig_get, orig_time
+
+
 def test_get_figma_data_falls_back_to_rest():
     """When MCP fetch fails, get_figma_data uses the REST API. No network."""
     def boom(*_):
@@ -260,6 +291,7 @@ if __name__ == "__main__":
     test_thread_text()
     test_recall_diagram_routes_figma()
     test_figma_mcp_helpers()
+    test_figma_rest_retries_on_429()
     test_get_figma_data_falls_back_to_rest()
     test_describe_retries_on_5xx()
     print("all intake + format + figma + mcp + retry checks passed")

@@ -6,6 +6,7 @@ back to the REST API, so the bot works whether or not MCP auth is set up.
 """
 import os
 import re
+import time
 
 import requests
 
@@ -22,15 +23,26 @@ def extract_node_id(text: str) -> str | None:
 
 
 def fetch_figma_rest(file_key: str, node_id: str | None) -> dict:
-    """Fetch node (or whole file) JSON from the Figma REST API. Needs FIGMA_TOKEN."""
+    """Fetch node (or whole file) JSON from the Figma REST API. Needs FIGMA_TOKEN.
+
+    Retries transient 429s, honoring Retry-After but capping the wait so a Slack
+    reply isn't blocked too long; if Figma asks for a long cool-down, give up and
+    let the caller surface a rate-limit message.
+    """
     headers = {"X-Figma-Token": os.environ["FIGMA_TOKEN"]}
     if node_id:
         url = f"https://api.figma.com/v1/files/{file_key}/nodes?ids={node_id}"
     else:
         url = f"https://api.figma.com/v1/files/{file_key}"
-    resp = requests.get(url, headers=headers, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
+    for attempt in range(3):
+        resp = requests.get(url, headers=headers, timeout=30)
+        if resp.status_code == 429 and attempt < 2:
+            wait = int(resp.headers.get("Retry-After", 2 ** attempt))
+            if wait <= 15:
+                time.sleep(wait)
+                continue
+        resp.raise_for_status()
+        return resp.json()
 
 
 def figma_outline(data: dict) -> str:

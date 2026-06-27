@@ -281,14 +281,18 @@ def route_diagram(event, say, set_status=None) -> bool:
                 set_status("Reading the Figma file…")
             description = describe_figma(figma.get_figma_data(figma_key, figma.extract_node_id(text)), style)
         except Exception as e:
-            say(
-                text=(
+            if "429" in str(e):
+                msg = (
+                    "Figma is rate-limiting requests right now (429). Please wait a "
+                    "moment and try again, or export the frame as a PNG and upload it here."
+                )
+            else:
+                msg = (
                     f"Sorry, I couldn't read that Figma file: {e}\n"
                     "Make sure the file is accessible and `FIGMA_TOKEN` is set, "
                     "or export the frame as a PNG and upload it here instead."
-                ),
-                thread_ts=thread_ts,
-            )
+                )
+            say(text=msg, thread_ts=thread_ts)
             return True
         say(text=description, thread_ts=thread_ts)
         return True
