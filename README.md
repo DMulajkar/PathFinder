@@ -57,6 +57,40 @@ the three HTTP endpoints OAuth needs — `/slack/install`, `/slack/oauth_redirec
 `/lucid/callback` — on `localhost:3000`, fronted by Caddy for HTTPS. In single-workspace
 dev mode (no client ID) only Socket Mode runs.
 
+## Mermaid export
+
+Add the word **`mermaid`** (or `diagram code` / `flowchart code` / `as code`) to your
+message and PathFinder appends a re-editable [Mermaid](https://mermaid.js.org/) flowchart
+code block after the accessible text description — so you get both the screen-reader
+breakdown *and* the diagram as code you can paste into GitHub, Notion, or
+[mermaid.live](https://mermaid.live) to render it visually.
+
+For example, uploading a login flowchart with the message `mermaid` returns a reply
+ending in:
+
+````
+```mermaid
+flowchart TD
+    A[Start] --> B{Credentials valid?}
+    B -->|Yes| C[Grant access]
+    B -->|No| D[Show error]
+    D --> A
+```
+````
+
+which renders as:
+
+```mermaid
+flowchart TD
+    A[Start] --> B{Credentials valid?}
+    B -->|Yes| C[Grant access]
+    B -->|No| D[Show error]
+    D --> A
+```
+
+It composes with the other options, e.g. `detailed plain language mermaid`. (The mrkdwn
+converter is fence-aware, so the `-->` edges inside the code block aren't rewritten to `→`.)
+
 ## Setup
 
 1. **Install Python 3.11+** from python.org (the Windows Store stub won't run pip reliably).
