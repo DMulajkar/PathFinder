@@ -320,7 +320,16 @@ def route_diagram(event, say, client, set_status=None) -> bool:
         except Exception as e:
             say(text=f"Sorry, I couldn't analyze *{f.get('name')}*: {e}", thread_ts=thread_ts)
             return True
-        if NOT_DIAGRAM in description:  # not a flowchart -> consume silently, no reply
+        if NOT_DIAGRAM in description:  # not a flowchart
+            # In the assistant pane the 'thinking' status only clears when we post,
+            # so a silent return leaves it spinning forever (looks like a stuck loop).
+            # Reply there; stay silent in channels (no status to clear, no spam).
+            if set_status:
+                say(text=(
+                    "That doesn't look like a diagram I can break down. Upload a "
+                    "flowchart or process diagram, or paste a Figma/Lucidchart link, "
+                    "and I'll describe it."
+                ), thread_ts=thread_ts)
             return True
         say(text=description, thread_ts=thread_ts)
         return True
