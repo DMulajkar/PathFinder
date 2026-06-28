@@ -12,6 +12,8 @@ A Slack bot for the Slack Agent Builder Challenge ("Agent for Good" accessibilit
 
 **Lucidchart:** structured document content via `lucid_mcp.fetch` (remote Lucid MCP, OAuth via dynamic client registration — works unlike Figma's allowlist) with REST PNG export fallback (optional `LUCID_API_TOKEN`).
 
+**Visio:** `.vsdx` uploads parsed directly in `visio.py` (stdlib `zipfile` + `xml.etree` — the file is a ZIP of XML; shapes carry `<Text>`, `<Connects>` gives the edge graph). No Microsoft API. Detected by Slack `filetype == "vsdx"`. SharePoint/OneDrive Visio *links* are out of scope (need MS Graph + OAuth); `get_visio_url()` is a stub.
+
 Note: `gemini-2.0-flash` has no free-tier quota (returns `429 limit: 0`); `gemini-2.5-flash` works on the free tier — hence the default.
 
 ## Running the bot

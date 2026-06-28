@@ -19,6 +19,8 @@ with a greeting and suggested prompts).
   REST API fallback), more accurate than reading a screenshot.
 - **Lucidchart links** — described from real document structure via the **Lucid MCP**
   (works), with a REST PNG-export fallback.
+- **Microsoft Visio (`.vsdx`) uploads** — parsed directly from the file's own XML
+  (shapes + connector graph), no Microsoft API needed. More accurate than a screenshot.
 - **Follow-up Q&A in-thread** — reply in the thread to ask questions about the same
   diagram ("what happens if approval fails?"); answers come from the diagram's content.
 - **Output options** — add a keyword to the message:
@@ -45,6 +47,7 @@ Slack message ──► app.py (Socket Mode handler / Assistant)
                    ├─ lucid.app ─► lucid.get_lucid ─► Gemini ─► reply
                    │                 ├─ lucid_mcp.fetch  (MCP, OAuth)   ← tried first (works)
                    │                 └─ lucid REST export (LUCID_API_TOKEN) ← fallback
+                   ├─ .vsdx file ─► visio.get_visio (unzip + parse XML) ─► Gemini ─► reply
                    └─ thread reply ─► recall the thread's diagram ─► Gemini ─► answer
 ```
 
@@ -136,6 +139,23 @@ use the REST API** (`FIGMA_TOKEN`), which returns the same structured data.
 > the use case: a shared team/service account makes all team diagrams accessible to blind
 > teammates. Image/PDF uploads have no such limit.
 
+## Microsoft Visio (`.vsdx` uploads)
+
+A `.vsdx` file is a ZIP of XML (Open Packaging, like `.docx`), and the diagram's
+structure is already inside it: each page's `<Shape>` carries its `<Text>`, and the
+`<Connects>` section glues connector shapes to the shapes they join. `visio.py` unzips
+the file, reconstructs the directed, labeled edges (Start → Decision, etc.), and feeds
+that outline to Gemini — the same "real structure beats a screenshot" advantage as
+Figma/Lucid, with **stdlib only** (`zipfile` + `xml.etree`). No Microsoft account, API
+key, or OAuth required. Just upload the `.vsdx` to Slack.
+
+> Scope: this handles `.vsdx` **uploads**. Visio files that live in SharePoint/OneDrive
+> (M365 links) would need the Microsoft Graph API plus an Entra ID app registration and
+> the full OAuth code flow to download the file first (`visio.get_visio_url()` is a stub
+> marking where that goes). Uploading the file covers the common case without any of that.
+> Multi-page files, grouped shapes, and text stored on a master rather than the shape
+> instance are best-effort — the common single-flow diagram is solid.
+
 ## Deployment (self-hosted, always-on)
 
 Production runs on a self-hosted Ubuntu server (Oracle Cloud) under **systemd**, so it
@@ -217,8 +237,9 @@ Notes:
 
 Covers URL/mimetype detection, node-id parsing, Figma/Lucid outline handling, verbosity /
 plain-language / mermaid option parsing, fence-safe mrkdwn (Mermaid `-->` survives),
-follow-up thread recall, MCP helpers and token-refresh logic, the MCP→REST fallbacks, and
-the Gemini 5xx retry. No network or live keys needed.
+follow-up thread recall, Visio `.vsdx` shape/connector parsing, MCP helpers and
+token-refresh logic, the MCP→REST fallbacks, and the Gemini 5xx retry. No network or
+live keys needed.
 
 ## License
 
@@ -231,6 +252,7 @@ the Gemini 5xx retry. No network or live keys needed.
 - **PNG/JPG/PDF of a flowchart** → threaded reply with a structured, accessible description.
 - **Figma link** (to a file your account can access) → threaded reply from structured data.
 - **Lucidchart link** → threaded reply from the Lucid MCP (after connecting via App Home).
+- **Visio `.vsdx` upload** → threaded reply parsed from the file's shape/connector XML.
 - **Reply in the thread** with a question → answer about that diagram.
 - **Add `summary` / `detailed` / `plain language` / `mermaid`** → output adapts.
 - **Assistant pane** → open PathFinder from the sidebar; greeting + suggested prompts; all

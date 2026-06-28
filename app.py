@@ -23,6 +23,7 @@ from slack_sdk.oauth.state_store import FileOAuthStateStore
 import figma
 import lucid
 import lucid_mcp
+import visio
 
 load_dotenv()
 
@@ -117,6 +118,15 @@ LUCID_PROMPT = (
     "is fully understandable without seeing it.\n\n" + _ANALYSIS
 )
 
+VISIO_PROMPT = (
+    "You are an accessibility assistant helping a blind user understand a diagram "
+    "from a Microsoft Visio (.vsdx) file shared in their workplace Slack channel. "
+    "Below is the file's structured content (each page's shapes and the directed "
+    "connections between them, with any connector labels) parsed from the .vsdx. "
+    "Use the connections to reconstruct the diagram's flow and describe it so it is "
+    "fully understandable without seeing it.\n\n" + _ANALYSIS
+)
+
 QA_PROMPT = (
     "You are an accessibility assistant helping a blind user who has already "
     "received a structured description of a diagram shared in their workplace "
@@ -176,6 +186,13 @@ def extract_figma_key(text: str) -> str | None:
 
 def has_lucidchart(text: str) -> bool:
     return bool(LUCID_RE.search(text))
+
+
+def _is_visio(f: dict) -> bool:
+    """True if a Slack file is a Visio drawing (.vsdx). Slack sets filetype=vsdx;
+    fall back to the name extension if the mimetype came through as octet-stream."""
+    return (f.get("filetype") == "vsdx"
+            or (f.get("name") or "").lower().endswith(".vsdx"))
 
 
 # -- Description layer (Phase 3-4) --------------------------------------------
@@ -274,6 +291,11 @@ def describe_lucid(content: str, style: str = "") -> str:
     return _generate([LUCID_PROMPT + style + "\n\nLucid document content:\n" + content])
 
 
+def describe_visio(outline: str, style: str = "") -> str:
+    """Describe a Visio file from its parsed shape/connection outline (no screenshot)."""
+    return _generate([VISIO_PROMPT + style + "\n\nVisio document content:\n" + outline])
+
+
 def answer_question(kind: str, payload, mime, conversation: str) -> str:
     """Answer a follow-up question about a recalled diagram (image or text)."""
     prompt = QA_PROMPT + "\n\nConversation so far:\n" + conversation
@@ -303,8 +325,26 @@ def route_diagram(event, say, client, set_status=None) -> bool:
     text = event.get("text") or ""
     style = describe_style(text)
 
-    # Priority 1: image/PDF attachment
+    # Priority 1: file attachment
     for f in event.get("files") or []:
+        # Visio .vsdx: parse structure locally (zip of XML), no image/mime path.
+        if _is_visio(f):
+            url = f.get("url_private_download")
+            if not url:
+                say(text="Could not get a download URL for that file.", thread_ts=thread_ts)
+                return True
+            try:
+                if set_status:
+                    set_status("Reading the Visio file…")
+                description = describe_visio(
+                    visio.get_visio(download_slack_file(url, client.token)), style
+                )
+            except Exception as e:
+                say(text=f"Sorry, I couldn't read *{f.get('name')}*: {e}", thread_ts=thread_ts)
+                return True
+            say(text=description, thread_ts=thread_ts)
+            return True
+
         mime = f.get("mimetype", "")
         if mime not in SUPPORTED_MIME:
             say(text=f"Unsupported file type `{mime}`. Please upload a PNG, JPG, or PDF.", thread_ts=thread_ts)
@@ -411,8 +451,10 @@ def _recall_diagram(messages, token):
     follow-up; add a thread_ts->payload cache if calls get expensive."""
     for m in messages:
         for f in m.get("files") or []:
-            mime = f.get("mimetype", "")
             url = f.get("url_private_download")
+            if _is_visio(f) and url:
+                return ("text", visio.get_visio(download_slack_file(url, token)), None)
+            mime = f.get("mimetype", "")
             if mime in SUPPORTED_MIME and url:
                 return ("image", download_slack_file(url, token), mime)
         text = m.get("text") or ""

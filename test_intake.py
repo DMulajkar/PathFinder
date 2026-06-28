@@ -168,10 +168,62 @@ def test_recall_diagram_routes_figma():
     try:
         figma.get_figma_data = lambda k, n: ("text", "OUTLINE")
         msgs = [{"text": "plain"}, {"text": "see https://figma.com/design/KEY/x?node-id=1-2"}]
-        assert app._recall_diagram(msgs) == ("text", "OUTLINE", None)
-        assert app._recall_diagram([{"text": "no diagram here"}]) is None
+        assert app._recall_diagram(msgs, "xoxb-t") == ("text", "OUTLINE", None)
+        assert app._recall_diagram([{"text": "no diagram here"}], "xoxb-t") is None
     finally:
         figma.get_figma_data = orig
+
+
+def _sample_vsdx() -> bytes:
+    """Minimal in-memory .vsdx: Start --Yes--> Decision --> End."""
+    import io, zipfile
+    ns = "http://schemas.microsoft.com/office/visio/2012/main"
+    page = (
+        f'<PageContents xmlns="{ns}"><Shapes>'
+        '<Shape ID="1"><Text>Start</Text></Shape>'
+        '<Shape ID="2"><Text>Decision</Text></Shape>'
+        '<Shape ID="3"><Text>End</Text></Shape>'
+        '<Shape ID="10"><Text>Yes</Text></Shape>'
+        '<Shape ID="11"><Text></Text></Shape>'
+        '</Shapes><Connects>'
+        '<Connect FromSheet="10" ToSheet="1" FromCell="BeginX"/>'
+        '<Connect FromSheet="10" ToSheet="2" FromCell="EndX"/>'
+        '<Connect FromSheet="11" ToSheet="2" FromCell="BeginX"/>'
+        '<Connect FromSheet="11" ToSheet="3" FromCell="EndX"/>'
+        '</Connects></PageContents>'
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("visio/pages/pages.xml", f'<Pages xmlns="{ns}"><Page Name="Flow"/></Pages>')
+        z.writestr("visio/pages/page1.xml", page)
+    return buf.getvalue()
+
+
+def test_visio_parse():
+    import visio
+    text = visio.get_visio(_sample_vsdx())
+    assert "Start" in text and "Decision" in text and "End" in text
+    assert "Start -> Decision  (labeled \"Yes\")" in text   # directed + labeled edge
+    assert "Decision -> End" in text                        # unlabeled edge
+    assert "Page: Flow" in text                             # page name resolved
+    # a connector shape is an edge, not listed as its own node
+    shapes_block = text.split("Connections:")[0]
+    assert "- Yes" not in shapes_block
+
+
+def test_visio_detect_and_recall():
+    assert app._is_visio({"filetype": "vsdx"})
+    assert app._is_visio({"name": "MyFlow.VSDX"})
+    assert not app._is_visio({"mimetype": "image/png", "name": "x.png"})
+    # follow-up recall reads a .vsdx attachment as text, mocking the download
+    orig = app.download_slack_file
+    try:
+        app.download_slack_file = lambda url, token: _sample_vsdx()
+        msgs = [{"files": [{"filetype": "vsdx", "url_private_download": "u"}]}]
+        kind, payload, mime = app._recall_diagram(msgs, "xoxb-t")
+        assert kind == "text" and mime is None and "Start" in payload
+    finally:
+        app.download_slack_file = orig
 
 
 def test_figma_mcp_helpers():
@@ -306,6 +358,8 @@ if __name__ == "__main__":
     test_home_view()
     test_thread_text()
     test_recall_diagram_routes_figma()
+    test_visio_parse()
+    test_visio_detect_and_recall()
     test_figma_mcp_helpers()
     test_figma_rest_retries_on_429()
     test_get_figma_data_falls_back_to_rest()
