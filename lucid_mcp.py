@@ -14,14 +14,17 @@ ponytail: mirrors figma_mcp.py OAuth/MCP plumbing. Extract a shared mcp_oauth
 module if a third remote MCP shows up — two is not yet worth the abstraction.
 """
 import asyncio
+import base64
+import hashlib
 import json
 import queue
+import secrets
 import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
 from mcp.client.auth import OAuthClientProvider, TokenStorage
@@ -31,6 +34,11 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAu
 
 MCP_URL = "https://mcp.lucid.app/mcp"
 TOKEN_ENDPOINT = "https://mcp.lucid.app/oauth/token"
+AUTHORIZE_ENDPOINT = "https://mcp.lucid.app/oauth/authorize"
+REGISTER_ENDPOINT = "https://mcp.lucid.app/oauth/register"
+# Out-of-band redirect: Lucid shows the code on a page instead of calling back,
+# so the in-Slack "Connect Lucidchart" button needs no public HTTPS callback.
+OOB_REDIRECT = "urn:ietf:wg:oauth:2.0:oob"
 CALLBACK_PORT = 8765
 REDIRECT_URI = f"http://localhost:{CALLBACK_PORT}/callback"
 TOKENS_FILE = Path(__file__).with_name(".lucid_mcp_tokens.json")
@@ -151,23 +159,101 @@ def _refresh_tokens() -> None:
     store = _FileStorage()
     data = store._load()
     tok, client = data.get("tokens", {}), data.get("client", {})
-    resp = requests.post(
-        TOKEN_ENDPOINT,
-        data={
-            "grant_type": "refresh_token",
-            "refresh_token": tok["refresh_token"],
-            "client_id": client["client_id"],
-            "client_secret": client["client_secret"],
-            "resource": MCP_URL,
-        },
-        timeout=30,
-    )
+    payload = {
+        "grant_type": "refresh_token",
+        "refresh_token": tok["refresh_token"],
+        "client_id": client["client_id"],
+        "resource": MCP_URL,
+    }
+    if client.get("client_secret"):  # public (PKCE) clients have none
+        payload["client_secret"] = client["client_secret"]
+    resp = requests.post(TOKEN_ENDPOINT, data=payload, timeout=30)
     resp.raise_for_status()
     new = resp.json()
     new.setdefault("refresh_token", tok.get("refresh_token"))  # keep if not rotated
     data["tokens"] = new
     data["obtained_at"] = time.time()
     store._save(data)
+
+
+# -- In-Slack OOB authorization (no browser callback, no domain needed) -------
+
+def build_auth_url() -> str:
+    """Register a public PKCE client, stash it, and return Lucid's consent URL.
+
+    Pairs with exchange_code(): the OOB redirect makes Lucid display a code the
+    admin copies into Slack, so no public callback server is required.
+    """
+    reg = requests.post(
+        REGISTER_ENDPOINT,
+        json={
+            "client_name": "PathFinder",
+            "redirect_uris": [OOB_REDIRECT],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
+        },
+        timeout=30,
+    )
+    reg.raise_for_status()
+    client = reg.json()
+
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()
+    ).rstrip(b"=").decode()
+
+    store = _FileStorage()
+    data = store._load()
+    data["client"] = client
+    data["pending_verifier"] = verifier
+    store._save(data)
+
+    query = urlencode({
+        "response_type": "code",
+        "client_id": client["client_id"],
+        "redirect_uri": OOB_REDIRECT,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "resource": MCP_URL,
+    })
+    return f"{AUTHORIZE_ENDPOINT}?{query}"
+
+
+def exchange_code(code: str) -> None:
+    """Exchange the pasted OOB code for tokens and persist them. Raises on error."""
+    store = _FileStorage()
+    data = store._load()
+    client = data.get("client") or {}
+    verifier = data.get("pending_verifier")
+    if not client.get("client_id") or not verifier:
+        raise RuntimeError("No pending authorization — click Connect Lucidchart again.")
+
+    payload = {
+        "grant_type": "authorization_code",
+        "code": code.strip(),
+        "redirect_uri": OOB_REDIRECT,
+        "client_id": client["client_id"],
+        "code_verifier": verifier,
+        "resource": MCP_URL,
+    }
+    if client.get("client_secret"):
+        payload["client_secret"] = client["client_secret"]
+    resp = requests.post(TOKEN_ENDPOINT, data=payload, timeout=30)
+    resp.raise_for_status()
+
+    data["tokens"] = resp.json()
+    data["obtained_at"] = time.time()
+    data.pop("pending_verifier", None)
+    store._save(data)
+
+
+def is_connected() -> bool:
+    """True if we hold Lucid tokens (used to render the App Home button/status)."""
+    try:
+        return bool(json.loads(TOKENS_FILE.read_text()).get("tokens"))
+    except Exception:
+        return False
 
 
 def fetch(doc_id: str) -> str:

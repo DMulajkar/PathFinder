@@ -19,10 +19,15 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 import figma
 import lucid
+import lucid_mcp
 
 load_dotenv()
 
 app = App(token=os.environ["SLACK_BOT_TOKEN"])
+
+# Slack user ID allowed to connect Lucid (one-time, shared for everyone).
+# Unset = anyone may connect. ponytail: a single ID is the whole access policy.
+LUCID_ADMIN = os.environ.get("LUCID_ADMIN_USER", "")
 
 gemini = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
@@ -405,9 +410,27 @@ def handle_followup(event, say, client, set_status=None) -> bool:
 
 # -- App Home tab (static help screen) ----------------------------------------
 
-def _home_view() -> dict:
+def _home_view(user_id: str = "") -> dict:
     def section(text):
         return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
+
+    if lucid_mcp.is_connected():
+        lucid_blocks = [section("*Lucidchart:* ✓ connected — Lucid links work for everyone.")]
+    elif not LUCID_ADMIN or user_id == LUCID_ADMIN:
+        lucid_blocks = [
+            section(
+                "*Lucidchart:* not connected. One person connects once here, then "
+                "everyone's Lucid links work — no terminal, no setup."
+            ),
+            {"type": "actions", "elements": [{
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Connect Lucidchart"},
+                "style": "primary",
+                "action_id": "connect_lucid",
+            }]},
+        ]
+    else:
+        lucid_blocks = [section("*Lucidchart:* not connected — ask a workspace admin to connect it.")]
 
     return {
         "type": "home",
@@ -441,6 +464,8 @@ def _home_view() -> dict:
                 "• Reply in the thread to ask *follow-up questions* about the diagram"
             ),
             {"type": "divider"},
+            *lucid_blocks,
+            {"type": "divider"},
             section(
                 "_Built for the Slack Agent Builder Challenge — Agent for Good "
                 "(accessibility track)._"
@@ -451,7 +476,44 @@ def _home_view() -> dict:
 
 @app.event("app_home_opened")
 def publish_home(event, client):
-    client.views_publish(user_id=event["user"], view=_home_view())
+    client.views_publish(user_id=event["user"], view=_home_view(event["user"]))
+
+
+@app.action("connect_lucid")
+def connect_lucid(ack, body, client):
+    ack()
+    if LUCID_ADMIN and body["user"]["id"] != LUCID_ADMIN:
+        return
+    url = lucid_mcp.build_auth_url()
+    client.views_open(trigger_id=body["trigger_id"], view={
+        "type": "modal",
+        "callback_id": "lucid_code",
+        "title": {"type": "plain_text", "text": "Connect Lucidchart"},
+        "submit": {"type": "plain_text", "text": "Connect"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "blocks": [
+            {"type": "section", "text": {"type": "mrkdwn", "text": (
+                f"1. <{url}|Open Lucid authorization> and click *Allow*.\n"
+                "2. Copy the code Lucid shows you.\n"
+                "3. Paste it below and hit *Connect*."
+            )}},
+            {"type": "input", "block_id": "code",
+             "label": {"type": "plain_text", "text": "Authorization code"},
+             "element": {"type": "plain_text_input", "action_id": "value"}},
+        ],
+    })
+
+
+@app.view("lucid_code")
+def lucid_code_submit(ack, body, view, client):
+    code = view["state"]["values"]["code"]["value"]["value"]
+    try:
+        lucid_mcp.exchange_code(code)
+    except Exception as e:  # show the failure in the modal, don't close it
+        ack(response_action="errors", errors={"code": f"Couldn't connect: {e}"})
+        return
+    ack()
+    client.views_publish(user_id=body["user"]["id"], view=_home_view(body["user"]["id"]))
 
 
 # -- Channel handler ----------------------------------------------------------
