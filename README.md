@@ -220,6 +220,10 @@ plain-language / mermaid option parsing, fence-safe mrkdwn (Mermaid `-->` surviv
 follow-up thread recall, MCP helpers and token-refresh logic, the MCP→REST fallbacks, and
 the Gemini 5xx retry. No network or live keys needed.
 
+## License
+
+[MIT](LICENSE) — free to use, modify, and distribute.
+
 ## Verify end-to-end
 
 - **Plain text in a channel** → bot stays silent (no spam).
