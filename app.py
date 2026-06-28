@@ -54,6 +54,11 @@ else:
 # Unset = anyone may connect. ponytail: a single ID is the whole access policy.
 LUCID_ADMIN = os.environ.get("LUCID_ADMIN_USER", "")
 
+# Public base URL of this server (set in prod). With it, Lucid OAuth redirects
+# the code straight to /lucid/callback; without it, fall back to manual paste.
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
+LUCID_REDIRECT = f"{PUBLIC_BASE_URL}/lucid/callback" if PUBLIC_BASE_URL else lucid_mcp.OOB_REDIRECT
+
 gemini = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
@@ -526,24 +531,39 @@ def connect_lucid(ack, body, client):
     ack()
     if LUCID_ADMIN and body["user"]["id"] != LUCID_ADMIN:
         return
-    url = lucid_mcp.build_auth_url()
-    client.views_open(trigger_id=body["trigger_id"], view={
-        "type": "modal",
-        "callback_id": "lucid_code",
-        "title": {"type": "plain_text", "text": "Connect Lucidchart"},
-        "submit": {"type": "plain_text", "text": "Connect"},
-        "close": {"type": "plain_text", "text": "Cancel"},
-        "blocks": [
-            {"type": "section", "text": {"type": "mrkdwn", "text": (
-                f"1. <{url}|Open Lucid authorization> and click *Allow*.\n"
-                "2. Copy the code Lucid shows you.\n"
-                "3. Paste it below and hit *Connect*."
-            )}},
-            {"type": "input", "block_id": "code",
-             "label": {"type": "plain_text", "text": "Authorization code"},
-             "element": {"type": "plain_text_input", "action_id": "value"}},
-        ],
-    })
+    url = lucid_mcp.build_auth_url(LUCID_REDIRECT)
+    if PUBLIC_BASE_URL:  # real callback: click Allow -> auto-redirect -> done
+        view = {
+            "type": "modal",
+            "title": {"type": "plain_text", "text": "Connect Lucidchart"},
+            "close": {"type": "plain_text", "text": "Done"},
+            "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn", "text": (
+                    f"<{url}|Click here to authorize Lucidchart>, then click *Allow*.\n\n"
+                    "You'll see a confirmation page — that's it. Lucid links will work "
+                    "for everyone in this workspace."
+                )}},
+            ],
+        }
+    else:  # OOB fallback (local dev, no public URL): manual code paste
+        view = {
+            "type": "modal",
+            "callback_id": "lucid_code",
+            "title": {"type": "plain_text", "text": "Connect Lucidchart"},
+            "submit": {"type": "plain_text", "text": "Connect"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "blocks": [
+                {"type": "section", "text": {"type": "mrkdwn", "text": (
+                    f"1. <{url}|Open Lucid authorization> and click *Allow*.\n"
+                    "2. Copy the code Lucid shows you.\n"
+                    "3. Paste it below and hit *Connect*."
+                )}},
+                {"type": "input", "block_id": "code",
+                 "label": {"type": "plain_text", "text": "Authorization code"},
+                 "element": {"type": "plain_text_input", "action_id": "value"}},
+            ],
+        }
+    client.views_open(trigger_id=body["trigger_id"], view=view)
 
 
 @app.view("lucid_code")
@@ -628,5 +648,16 @@ if __name__ == "__main__":
         @flask_app.route("/slack/oauth_redirect", methods=["GET"])
         def slack_oauth_redirect():
             return bolt_handler.handle(request)
+
+        @flask_app.route("/lucid/callback", methods=["GET"])
+        def lucid_callback():
+            code = request.args.get("code")
+            if not code:
+                return "Missing authorization code.", 400
+            try:
+                lucid_mcp.exchange_code(code)
+            except Exception as e:
+                return f"<h1>Couldn't connect Lucidchart: {e}</h1>", 500
+            return "<h1>Lucidchart connected. You can close this tab and return to Slack.</h1>"
 
         flask_app.run(host="127.0.0.1", port=3000)

@@ -178,17 +178,19 @@ def _refresh_tokens() -> None:
 
 # -- In-Slack OOB authorization (no browser callback, no domain needed) -------
 
-def build_auth_url() -> str:
+def build_auth_url(redirect_uri: str = OOB_REDIRECT) -> str:
     """Register a public PKCE client, stash it, and return Lucid's consent URL.
 
-    Pairs with exchange_code(): the OOB redirect makes Lucid display a code the
-    admin copies into Slack, so no public callback server is required.
+    redirect_uri defaults to OOB (manual code paste) for local dev; pass a real
+    HTTPS callback (e.g. https://host/lucid/callback) when one is available so
+    Lucid redirects the code straight back — no copy-paste. Pairs with
+    exchange_code(), which reuses the same redirect_uri.
     """
     reg = requests.post(
         REGISTER_ENDPOINT,
         json={
             "client_name": "PathFinder",
-            "redirect_uris": [OOB_REDIRECT],
+            "redirect_uris": [redirect_uri],
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
             "token_endpoint_auth_method": "none",
@@ -207,12 +209,13 @@ def build_auth_url() -> str:
     data = store._load()
     data["client"] = client
     data["pending_verifier"] = verifier
+    data["redirect_uri"] = redirect_uri  # exchange must reuse the exact value
     store._save(data)
 
     query = urlencode({
         "response_type": "code",
         "client_id": client["client_id"],
-        "redirect_uri": OOB_REDIRECT,
+        "redirect_uri": redirect_uri,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
         "resource": MCP_URL,
@@ -221,7 +224,7 @@ def build_auth_url() -> str:
 
 
 def exchange_code(code: str) -> None:
-    """Exchange the pasted OOB code for tokens and persist them. Raises on error."""
+    """Exchange the authorization code for tokens and persist them. Raises on error."""
     store = _FileStorage()
     data = store._load()
     client = data.get("client") or {}
@@ -232,7 +235,7 @@ def exchange_code(code: str) -> None:
     payload = {
         "grant_type": "authorization_code",
         "code": code.strip(),
-        "redirect_uri": OOB_REDIRECT,
+        "redirect_uri": data.get("redirect_uri", OOB_REDIRECT),
         "client_id": client["client_id"],
         "code_verifier": verifier,
         "resource": MCP_URL,
