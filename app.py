@@ -639,6 +639,10 @@ if __name__ == "__main__":
         ).start()
 
         flask_app = Flask(__name__)
+        # Behind Caddy (TLS terminator): trust X-Forwarded-Proto/Host so Bolt sees
+        # the request as https and builds an https OAuth redirect Slack accepts.
+        from werkzeug.middleware.proxy_fix import ProxyFix
+        flask_app.wsgi_app = ProxyFix(flask_app.wsgi_app, x_proto=1, x_host=1)
         bolt_handler = SlackRequestHandler(app)
 
         @flask_app.route("/slack/install", methods=["GET"])
