@@ -377,8 +377,9 @@ def route_diagram(event, say, client, set_status=None) -> bool:
                 )
                 say(text=description, thread_ts=thread_ts)
                 return True
-            except Exception:
-                pass  # fall through to manual-export instructions
+            except Exception as e:
+                print(f"[lucid] get_lucid/describe failed for {doc_id}: {e!r}", flush=True)
+                # fall through to manual-export instructions
         say(
             text=(
                 "I couldn't read that Lucidchart diagram directly "

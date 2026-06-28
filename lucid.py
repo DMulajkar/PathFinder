@@ -50,6 +50,8 @@ def get_lucid(doc_id: str) -> tuple[str, object]:
         import lucid_mcp
 
         return ("text", lucid_mcp.fetch(doc_id))
-    except Exception:
-        # MCP not authorized / failed -> REST export (raises if no token/access)
+    except Exception as e:
+        # MCP not authorized / failed -> REST export (raises if no token/access).
+        # Log the real MCP error; otherwise both failures are invisible.
+        print(f"[lucid] MCP fetch failed for {doc_id}: {e!r}", flush=True)
         return ("image", export_png(doc_id))
