@@ -22,6 +22,9 @@
     }
   },
   "oauth_config": {
+    "redirect_urls": [
+      "https://pathfinder-slackhack.duckdns.org/slack/oauth_redirect"
+    ],
     "scopes": {
       "bot": [
         "app_mentions:read",

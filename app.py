@@ -16,6 +16,9 @@ from google.genai import errors as genai_errors
 from google.genai import types
 from slack_bolt import App, Assistant
 from slack_bolt.adapter.socket_mode import SocketModeHandler
+from slack_bolt.oauth.oauth_settings import OAuthSettings
+from slack_sdk.oauth.installation_store import FileInstallationStore
+from slack_sdk.oauth.state_store import FileOAuthStateStore
 
 import figma
 import lucid
@@ -23,7 +26,29 @@ import lucid_mcp
 
 load_dotenv()
 
-app = App(token=os.environ["SLACK_BOT_TOKEN"])
+BOT_SCOPES = [
+    "app_mentions:read", "assistant:write", "chat:write",
+    "channels:history", "groups:history", "im:history", "files:read",
+]
+
+# Distributed (multi-workspace) when SLACK_CLIENT_ID is set: per-install tokens
+# come from the file install store, so anyone can add PathFinder via the
+# "Add to Slack" link. Without it, fall back to the single-workspace dev token.
+# ponytail: file stores (no DB) are plenty for a challenge-scale app.
+_DISTRIBUTED = bool(os.environ.get("SLACK_CLIENT_ID"))
+if _DISTRIBUTED:
+    app = App(
+        signing_secret=os.environ["SLACK_SIGNING_SECRET"],
+        oauth_settings=OAuthSettings(
+            client_id=os.environ["SLACK_CLIENT_ID"],
+            client_secret=os.environ["SLACK_CLIENT_SECRET"],
+            scopes=BOT_SCOPES,
+            installation_store=FileInstallationStore(base_dir="./data/installations"),
+            state_store=FileOAuthStateStore(expiration_seconds=600, base_dir="./data/states"),
+        ),
+    )
+else:
+    app = App(token=os.environ["SLACK_BOT_TOKEN"])
 
 # Slack user ID allowed to connect Lucid (one-time, shared for everyone).
 # Unset = anyone may connect. ponytail: a single ID is the whole access policy.
@@ -127,11 +152,11 @@ _MERMAID = (
 
 # -- Intake helpers -----------------------------------------------------------
 
-def download_slack_file(url: str) -> bytes:
-    """Download a private Slack file using the bot token."""
+def download_slack_file(url: str, token: str) -> bytes:
+    """Download a private Slack file using the installing workspace's bot token."""
     resp = requests.get(
         url,
-        headers={"Authorization": f"Bearer {os.environ['SLACK_BOT_TOKEN']}"},
+        headers={"Authorization": f"Bearer {token}"},
         timeout=30,
     )
     resp.raise_for_status()
@@ -262,11 +287,12 @@ HELP_TEXT = (
 
 # -- Shared intake routing ----------------------------------------------------
 
-def route_diagram(event, say, set_status=None) -> bool:
+def route_diagram(event, say, client, set_status=None) -> bool:
     """Route a message to the right describer. Returns True if it responded.
 
-    Shared by the channel handler and the assistant. set_status (assistant only)
-    shows a 'thinking' indicator while Gemini/Figma work.
+    Shared by the channel handler and the assistant. client carries the
+    installing workspace's token (for file downloads); set_status (assistant
+    only) shows a 'thinking' indicator while Gemini/Figma work.
     """
     thread_ts = event.get("thread_ts") or event["ts"]
     text = event.get("text") or ""
@@ -285,7 +311,7 @@ def route_diagram(event, say, set_status=None) -> bool:
         try:
             if set_status:
                 set_status("Analyzing your diagram…")
-            description = describe_diagram(download_slack_file(url), mime, style, gate=True)
+            description = describe_diagram(download_slack_file(url, client.token), mime, style, gate=True)
         except Exception as e:
             say(text=f"Sorry, I couldn't analyze *{f.get('name')}*: {e}", thread_ts=thread_ts)
             return True
@@ -354,17 +380,17 @@ def route_diagram(event, say, set_status=None) -> bool:
 
 # -- Follow-up Q&A in-thread (Phase 6) ----------------------------------------
 
-_bot_user_id = None
+_bot_user_ids: dict[str, str] = {}  # per-workspace: the bot's user_id differs by install
 
 
 def _get_bot_user_id(client) -> str:
-    global _bot_user_id
-    if _bot_user_id is None:
-        _bot_user_id = client.auth_test()["user_id"]
-    return _bot_user_id
+    tok = client.token
+    if tok not in _bot_user_ids:
+        _bot_user_ids[tok] = client.auth_test()["user_id"]
+    return _bot_user_ids[tok]
 
 
-def _recall_diagram(messages):
+def _recall_diagram(messages, token):
     """Re-derive the diagram from a thread's messages, in post order.
     ponytail: stateless re-fetch (no cache) — re-downloads/re-queries each
     follow-up; add a thread_ts->payload cache if calls get expensive."""
@@ -373,7 +399,7 @@ def _recall_diagram(messages):
             mime = f.get("mimetype", "")
             url = f.get("url_private_download")
             if mime in SUPPORTED_MIME and url:
-                return ("image", download_slack_file(url), mime)
+                return ("image", download_slack_file(url, token), mime)
         text = m.get("text") or ""
         key = extract_figma_key(text)
         if key:
@@ -413,7 +439,7 @@ def handle_followup(event, say, client, set_status=None) -> bool:
     bot_id = _get_bot_user_id(client)
     if not any(m.get("user") == bot_id for m in messages):
         return False  # we never described anything here -> not our thread
-    diagram = _recall_diagram(messages)
+    diagram = _recall_diagram(messages, client.token)
     if not diagram:
         return False
     if set_status:
@@ -538,7 +564,7 @@ def lucid_code_submit(ack, body, view, client):
 def handle_message(event, say, client):
     if event.get("bot_id"):  # ponytail: ignore our own messages, avoid loops
         return
-    if route_diagram(event, say):
+    if route_diagram(event, say, client):
         return
     # Plain text: answer if it's a follow-up in a thread we described; else silent.
     handle_followup(event, say, client)
@@ -566,7 +592,7 @@ def assistant_started(say, set_suggested_prompts):
 
 @assistant.user_message
 def assistant_message(event, say, set_status, client):
-    if route_diagram(event, say, set_status=set_status):
+    if route_diagram(event, say, client, set_status=set_status):
         return
     if handle_followup(event, say, client, set_status=set_status):
         return
@@ -577,4 +603,30 @@ app.assistant(assistant)
 
 
 if __name__ == "__main__":
-    SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"]).start()
+    if not _DISTRIBUTED:
+        SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"]).start()
+    else:
+        # Events (incl. all installed workspaces) over Socket Mode in a thread;
+        # the two OAuth GET endpoints over HTTP for Caddy to proxy (HTTPS:443 -> :3000).
+        import threading
+
+        from flask import Flask, request
+        from slack_bolt.adapter.flask import SlackRequestHandler
+
+        threading.Thread(
+            target=lambda: SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"]).start(),
+            daemon=True,
+        ).start()
+
+        flask_app = Flask(__name__)
+        bolt_handler = SlackRequestHandler(app)
+
+        @flask_app.route("/slack/install", methods=["GET"])
+        def slack_install():
+            return bolt_handler.handle(request)
+
+        @flask_app.route("/slack/oauth_redirect", methods=["GET"])
+        def slack_oauth_redirect():
+            return bolt_handler.handle(request)
+
+        flask_app.run(host="127.0.0.1", port=3000)
