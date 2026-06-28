@@ -69,6 +69,36 @@ FIGMA_RE = re.compile(
 LUCID_RE = re.compile(r"https://lucid\.app/")
 SUPPORTED_MIME = {"image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"}
 
+# Daily diagram quota, per workspace. Vision tokens are the cost driver, so cap
+# how many diagrams a workspace can run per day.
+# ponytail: in-memory counter — resets on restart and at date rollover. One
+# Socket Mode process, so no shared store needed; per-team so one busy workspace
+# can't drain another's. Swap to a DB if you ever run multiple instances.
+DAILY_DIAGRAM_QUOTA = int(os.environ.get("DAILY_DIAGRAM_QUOTA", "5"))
+_quota: dict[str, list] = {}  # team_id -> [date_str, count]
+
+
+def _quota_ok(team: str) -> bool:
+    """True (and consume one) if the team is under today's quota, else False."""
+    today = time.strftime("%Y-%m-%d")
+    day, n = _quota.get(team, [today, 0])
+    if day != today:
+        day, n = today, 0
+    if n >= DAILY_DIAGRAM_QUOTA:
+        _quota[team] = [day, n]
+        return False
+    _quota[team] = [day, n + 1]
+    return True
+
+
+def _diagram_intent(event, text: str) -> bool:
+    """Will this message actually run a (costly) describe? Gate quota only on
+    these — not on wrong file types or non-diagram chatter."""
+    for f in event.get("files") or []:
+        if _is_visio(f) or f.get("mimetype") in SUPPORTED_MIME:
+            return True
+    return bool(extract_figma_key(text)) or has_lucidchart(text)
+
 _ANALYSIS = """Extract:
 (1) the overall purpose of the diagram in one sentence,
 (2) all nodes or steps in logical order,
@@ -296,12 +326,15 @@ def describe_visio(outline: str, style: str = "") -> str:
     return _generate([VISIO_PROMPT + style + "\n\nVisio document content:\n" + outline])
 
 
-def answer_question(kind: str, payload, mime, conversation: str) -> str:
-    """Answer a follow-up question about a recalled diagram (image or text)."""
-    prompt = QA_PROMPT + "\n\nConversation so far:\n" + conversation
-    if kind == "image":
-        return _generate([prompt, types.Part.from_bytes(data=payload, mime_type=mime)])
-    return _generate([prompt + "\n\nDiagram content:\n" + payload])
+def answer_question(description: str, conversation: str) -> str:
+    """Answer a follow-up from the description the bot already posted — no image
+    re-send. The structured description has the nodes/branches/flow that
+    follow-ups ask about; re-analyzing the image would just repay vision tokens."""
+    return _generate([
+        QA_PROMPT
+        + "\n\nDiagram description:\n" + description
+        + "\n\nConversation so far:\n" + conversation
+    ])
 
 
 HELP_TEXT = (
@@ -324,6 +357,10 @@ def route_diagram(event, say, client, set_status=None) -> bool:
     thread_ts = event.get("thread_ts") or event["ts"]
     text = event.get("text") or ""
     style = describe_style(text)
+
+    if _diagram_intent(event, text) and not _quota_ok(event.get("team", "")):
+        say(text="Workplace quota hit, try again tomorrow.", thread_ts=thread_ts)
+        return True
 
     # Priority 1: file attachment
     for f in event.get("files") or []:
@@ -445,28 +482,16 @@ def _get_bot_user_id(client) -> str:
     return _bot_user_ids[tok]
 
 
-def _recall_diagram(messages, token):
-    """Re-derive the diagram from a thread's messages, in post order.
-    ponytail: stateless re-fetch (no cache) — re-downloads/re-queries each
-    follow-up; add a thread_ts->payload cache if calls get expensive."""
+def _diagram_description(messages, bot_id) -> str | None:
+    """The bot's original description in a thread (its first substantive post),
+    or None if it never described a diagram here — so we stay silent in threads
+    that aren't ours. The description is what follow-ups are answered from."""
+    has_source = any(_diagram_intent(m, m.get("text") or "") for m in messages)
+    if not has_source:
+        return None
     for m in messages:
-        for f in m.get("files") or []:
-            url = f.get("url_private_download")
-            if _is_visio(f) and url:
-                return ("text", visio.get_visio(download_slack_file(url, token)), None)
-            mime = f.get("mimetype", "")
-            if mime in SUPPORTED_MIME and url:
-                return ("image", download_slack_file(url, token), mime)
-        text = m.get("text") or ""
-        key = extract_figma_key(text)
-        if key:
-            kind, payload = figma.get_figma_data(key, figma.extract_node_id(text))
-            return (kind, payload, "image/png" if kind == "image" else None)
-        if has_lucidchart(text):
-            doc_id = lucid.extract_doc_id(text)
-            if doc_id:
-                kind, payload = lucid.get_lucid(doc_id)
-                return (kind, payload, "image/png" if kind == "image" else None)
+        if m.get("user") == bot_id and (m.get("text") or "").strip():
+            return m["text"]
     return None
 
 
@@ -482,8 +507,8 @@ def _thread_text(messages, bot_user_id) -> str:
 
 def handle_followup(event, say, client, set_status=None) -> bool:
     """Answer a plain-text follow-up in a thread where we described a diagram.
-    Returns True if it responded. Stays silent unless the bot already posted in
-    the thread AND a diagram can be recalled from it."""
+    Returns True if it responded. Answers from the description the bot already
+    posted — no image re-download or re-analysis (and so it's not quota-gated)."""
     thread_ts = event.get("thread_ts")
     if not thread_ts or not (event.get("text") or "").strip():
         return False  # only thread replies can be follow-ups
@@ -494,15 +519,12 @@ def handle_followup(event, say, client, set_status=None) -> bool:
     except Exception:
         return False
     bot_id = _get_bot_user_id(client)
-    if not any(m.get("user") == bot_id for m in messages):
-        return False  # we never described anything here -> not our thread
-    diagram = _recall_diagram(messages, client.token)
-    if not diagram:
-        return False
+    description = _diagram_description(messages, bot_id)
+    if not description:
+        return False  # not a thread where we described a diagram
     if set_status:
         set_status("Looking at the diagram…")
-    kind, payload, mime = diagram
-    say(text=answer_question(kind, payload, mime, _thread_text(messages, bot_id)),
+    say(text=answer_question(description, _thread_text(messages, bot_id)),
         thread_ts=thread_ts)
     return True
 
