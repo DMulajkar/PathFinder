@@ -215,9 +215,23 @@ def _generate(contents) -> str:
             time.sleep(2 ** attempt)  # 1s, then 2s
 
 
-def describe_diagram(image_bytes: bytes, mime_type: str, style: str = "") -> str:
-    """Describe a diagram image/PDF via Gemini (image recognition path)."""
-    return _generate([DESCRIBE_PROMPT + style, types.Part.from_bytes(data=image_bytes, mime_type=mime_type)])
+NOT_DIAGRAM = "NOT_A_DIAGRAM"
+_GATE = (
+    "\n\nFIRST decide whether this image is a flowchart, process/sequence diagram, "
+    "or similar node-and-arrow structured diagram. If it is NOT (e.g. a photo, "
+    "UI screenshot, chart/graph, logo, meme, or plain text), reply with exactly "
+    "NOT_A_DIAGRAM and nothing else — no explanation."
+)
+
+
+def describe_diagram(image_bytes: bytes, mime_type: str, style: str = "", gate: bool = False) -> str:
+    """Describe a diagram image/PDF via Gemini (image recognition path).
+
+    gate=True (direct uploads) makes Gemini return NOT_DIAGRAM for non-flowcharts
+    so the caller can stay silent; off for Figma/Lucid image fallback (explicit intent).
+    """
+    prompt = DESCRIBE_PROMPT + style + (_GATE if gate else "")
+    return _generate([prompt, types.Part.from_bytes(data=image_bytes, mime_type=mime_type)])
 
 
 def describe_figma(outline: str, style: str = "") -> str:
@@ -271,9 +285,11 @@ def route_diagram(event, say, set_status=None) -> bool:
         try:
             if set_status:
                 set_status("Analyzing your diagram…")
-            description = describe_diagram(download_slack_file(url), mime, style)
+            description = describe_diagram(download_slack_file(url), mime, style, gate=True)
         except Exception as e:
             say(text=f"Sorry, I couldn't analyze *{f.get('name')}*: {e}", thread_ts=thread_ts)
+            return True
+        if NOT_DIAGRAM in description:  # not a flowchart -> consume silently, no reply
             return True
         say(text=description, thread_ts=thread_ts)
         return True
