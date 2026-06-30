@@ -89,3 +89,38 @@ All shipped, reusing the existing intake + Gemini + threaded-reply plumbing.
 - All replies in the thread of the original message, never in channel root
 - If processing fails, reply explicitly with what went wrong and what the user should do instead
 - `slackhack@salesforce.com` and `testing@devpost.com` need workspace access before submission
+
+## VTR (Vendor Technology Review) Roadmap
+
+Items enterprise buyers typically require before approving a third-party Slack app. Work through these over the coming weeks before broader rollout.
+
+### Week 1 — Data handling & privacy
+
+- [ ] **Data flow inventory**: document exactly what data leaves the customer's Slack workspace and where it goes. Currently: file bytes + message text → Google Gemini API; Figma node data → Figma MCP/REST; Lucid content → Lucid MCP/REST. No data is stored by PathFinder itself (stateless).
+- [ ] **Data retention policy**: confirm Gemini API does not train on request data (Google's API ToS covers this; cite the specific clause). Do the same for Figma and Lucid MCP endpoints.
+- [ ] **PII / sensitive content exposure**: diagram content may include names, org charts, or business-sensitive flows. Document that images are sent to Gemini transiently and not logged or persisted by PathFinder. Add a note in the privacy policy / data processing agreement (DPA) template.
+- [ ] **Privacy policy**: draft a one-page privacy policy covering: what data is collected, who it is shared with (Google, Figma, Lucid), retention period (none on our side), user rights (GDPR Art. 17 deletion request → nothing to delete).
+
+### Week 2 — Security
+
+- [ ] **Secrets management**: confirm `SLACK_BOT_TOKEN`, `GEMINI_API_KEY`, `FIGMA_TOKEN`, `LUCID_API_TOKEN` are never logged and never committed. Verify `.gitignore` covers `.env`. Add `detect-secrets` or similar pre-commit hook if sharing the repo with reviewers.
+- [ ] **Token scopes — least privilege audit**: current scopes (`channels:history`, `groups:history`, `im:history`, `files:read`) give the bot read access to all messages in every channel it joins. Document the business justification (needs history to support follow-up Q&A). If reviewers push back, scope down to `files:read` + `app_mentions:read` only (loses follow-up in un-mentioned threads).
+- [ ] **Slack request signature verification**: confirm `slack_bolt` is validating `X-Slack-Signature` on every inbound request (it does by default; document this explicitly for reviewers).
+- [ ] **OAuth token storage**: for the distributed (multi-workspace) path, tokens are stored in `./data/installations` on disk. For production, replace `FileInstallationStore` with a secrets manager (AWS Secrets Manager, GCP Secret Manager) or an encrypted DB. Document the upgrade path.
+- [ ] **Dependency audit**: run `pip-audit` against `requirements.txt` and resolve any CVEs before submitting. Keep a record of the audit output and date.
+
+### Week 3 — Compliance & availability
+
+- [ ] **SOC 2 / ISO 27001 coverage**: PathFinder relies on Google (Gemini API), Figma, and Lucid. Obtain and attach their current SOC 2 Type II reports (or links) to show the supply chain is covered.
+- [ ] **Data residency**: confirm whether Gemini processes data in a specific region; some enterprise customers require EU or US-only processing. Document the current posture (no control — Google's default routing) and what would be needed to pin a region (Vertex AI with `us-central1` / `europe-west4` endpoint instead of the public Gemini API).
+- [ ] **Accessibility of the bot itself**: ironic gap to close — the bot helps blind users but its own Slack messages should be screen-reader clean. Audit that all replies use plain mrkdwn (no tables, no emoji, no image-only replies). This is largely done; write a short test to assert no raw markdown headers (`#`) appear in bot output.
+- [ ] **Uptime / SLA**: document expected availability. Socket Mode means uptime = the host process uptime. For enterprise, define the support tier (best-effort vs. SLA-backed) and the incident contact.
+- [ ] **Incident response**: write a one-page runbook: how to revoke tokens, rotate secrets, and notify affected workspaces if a breach occurs.
+
+### Week 4 — Packaging & submission artifacts
+
+- [ ] **Slack app directory listing requirements**: review [Slack's app review checklist](https://api.slack.com/start/distributing/guidelines) — app description, support URL, privacy policy URL, ToS URL all required.
+- [ ] **Data processing agreement (DPA) template**: prepare a standard DPA for enterprise customers to sign, covering sub-processors (Google, Figma, Lucid).
+- [ ] **Penetration test / security questionnaire**: some enterprise VTR processes require a self-assessment questionnaire (e.g., SIG Lite, CAIQ). Complete one and keep it on file.
+- [ ] **Rate limiting & abuse controls**: current daily quota (`DAILY_DIAGRAM_QUOTA`, default 5/day/workspace) is a cost guard, not a security control. Document it and consider adding per-user rate limiting if required.
+- [ ] **Deletion / offboarding**: document what happens when a workspace uninstalls the app. With `FileInstallationStore`, the install record persists on disk. Add cleanup on uninstall (`app_uninstalled` event → delete the installation record).
