@@ -20,6 +20,7 @@ from slack_bolt.oauth.oauth_settings import OAuthSettings
 from slack_sdk.oauth.installation_store import FileInstallationStore
 from slack_sdk.oauth.state_store import FileOAuthStateStore
 
+import drawio
 import figma
 import lucid
 import lucid_mcp
@@ -67,6 +68,7 @@ FIGMA_RE = re.compile(
     r"https://(?:www\.)?figma\.com/(file|design|make|board|proto|slides)/([A-Za-z0-9]+)"
 )
 LUCID_RE = re.compile(r"https://lucid\.app/")
+DRAWIO_RE = re.compile(r"https?://(?:app\.diagrams\.net|diagrams\.net|draw\.io)[^\s]*")
 SUPPORTED_MIME = {"image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"}
 
 # Daily diagram quota, per workspace. Vision tokens are the cost driver, so cap
@@ -95,9 +97,9 @@ def _diagram_intent(event, text: str) -> bool:
     """Will this message actually run a (costly) describe? Gate quota only on
     these — not on wrong file types or non-diagram chatter."""
     for f in event.get("files") or []:
-        if _is_visio(f) or f.get("mimetype") in SUPPORTED_MIME:
+        if _is_visio(f) or _is_drawio(f) or f.get("mimetype") in SUPPORTED_MIME:
             return True
-    return bool(extract_figma_key(text)) or has_lucidchart(text)
+    return bool(extract_figma_key(text)) or has_lucidchart(text) or has_drawio(text)
 
 _ANALYSIS = """Extract:
 (1) the overall purpose of the diagram in one sentence,
@@ -155,6 +157,15 @@ VISIO_PROMPT = (
     "connections between them, with any connector labels) parsed from the .vsdx. "
     "Use the connections to reconstruct the diagram's flow and describe it so it is "
     "fully understandable without seeing it.\n\n" + _ANALYSIS
+)
+
+DRAWIO_PROMPT = (
+    "You are an accessibility assistant helping a blind user understand a diagram "
+    "from a draw.io file shared in their workplace Slack channel. Below is the "
+    "file's structured content (shapes and directed connections between them, with "
+    "any edge labels) parsed from the .drawio XML. Use the connections to "
+    "reconstruct the diagram's flow and describe it so it is fully understandable "
+    "without seeing it.\n\n" + _ANALYSIS
 )
 
 QA_PROMPT = (
@@ -218,11 +229,23 @@ def has_lucidchart(text: str) -> bool:
     return bool(LUCID_RE.search(text))
 
 
+def has_drawio(text: str) -> bool:
+    return bool(DRAWIO_RE.search(text))
+
+
 def _is_visio(f: dict) -> bool:
     """True if a Slack file is a Visio drawing (.vsdx). Slack sets filetype=vsdx;
     fall back to the name extension if the mimetype came through as octet-stream."""
     return (f.get("filetype") == "vsdx"
             or (f.get("name") or "").lower().endswith(".vsdx"))
+
+
+def _is_drawio(f: dict) -> bool:
+    """True if a Slack file is a draw.io diagram (.drawio or .drawio.xml)."""
+    name = (f.get("name") or "").lower()
+    return (f.get("filetype") == "drawio"
+            or name.endswith(".drawio")
+            or name.endswith(".drawio.xml"))
 
 
 # -- Description layer (Phase 3-4) --------------------------------------------
@@ -326,6 +349,11 @@ def describe_visio(outline: str, style: str = "") -> str:
     return _generate([VISIO_PROMPT + style + "\n\nVisio document content:\n" + outline])
 
 
+def describe_drawio(outline: str, style: str = "") -> str:
+    """Describe a draw.io file from its parsed shape/connection outline (no screenshot)."""
+    return _generate([DRAWIO_PROMPT + style + "\n\ndraw.io document content:\n" + outline])
+
+
 def answer_question(description: str, conversation: str) -> str:
     """Answer a follow-up from the description the bot already posted — no image
     re-send. The structured description has the nodes/branches/flow that
@@ -339,6 +367,7 @@ def answer_question(description: str, conversation: str) -> str:
 
 HELP_TEXT = (
     "Share a diagram and I'll describe it accessibly: upload a *PNG, JPG, or PDF*, "
+    "a *.drawio file* (draw.io / diagrams.net), a *.vsdx file* (Visio), "
     "or paste a *Figma* or *Lucidchart* link. Add *summary* or *detailed* to set "
     "how much detail, *plain language* for a non-technical version, *mermaid* for a "
     "re-editable code version, and reply in the thread to ask follow-ups."
@@ -375,6 +404,24 @@ def route_diagram(event, say, client, set_status=None) -> bool:
                     set_status("Reading the Visio file…")
                 description = describe_visio(
                     visio.get_visio(download_slack_file(url, client.token)), style
+                )
+            except Exception as e:
+                say(text=f"Sorry, I couldn't read *{f.get('name')}*: {e}", thread_ts=thread_ts)
+                return True
+            say(text=description, thread_ts=thread_ts)
+            return True
+
+        # draw.io .drawio / .drawio.xml: parse XML locally, no image/mime path.
+        if _is_drawio(f):
+            url = f.get("url_private_download")
+            if not url:
+                say(text="Could not get a download URL for that file.", thread_ts=thread_ts)
+                return True
+            try:
+                if set_status:
+                    set_status("Reading the draw.io file…")
+                description = describe_drawio(
+                    drawio.get_drawio(download_slack_file(url, client.token)), style
                 )
             except Exception as e:
                 say(text=f"Sorry, I couldn't read *{f.get('name')}*: {e}", thread_ts=thread_ts)
@@ -462,6 +509,20 @@ def route_diagram(event, say, client, set_status=None) -> bool:
                 "I couldn't read that Lucidchart diagram directly "
                 "(it may be private, or Lucid access isn't set up).\n"
                 "Please export it as a PNG or PDF (File → Export) and upload it here."
+            ),
+            thread_ts=thread_ts,
+        )
+        return True
+
+    # Priority 4: draw.io link — no public API to fetch content from shared URLs,
+    # so guide the user to download and upload the file.
+    if has_drawio(text):
+        say(
+            text=(
+                "I detected a draw.io link. draw.io doesn't have a public API I can "
+                "use to fetch diagrams directly from a link.\n"
+                "Please download the file (File → Export As → XML, or save as .drawio) "
+                "and upload it here — I'll describe it from the file."
             ),
             thread_ts=thread_ts,
         )
